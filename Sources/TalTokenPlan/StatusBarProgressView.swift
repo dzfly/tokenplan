@@ -16,7 +16,9 @@ final class StatusBarProgressView: NSView {
 
     private let horizontalPadding: CGFloat = 7
     private let verticalPadding: CGFloat = 3
-    private let borderWidth: CGFloat = 1.5
+    private let ringLineWidth: CGFloat = 2.0
+
+    override var isOpaque: Bool { false }
 
     override var intrinsicContentSize: NSSize {
         switch state {
@@ -27,7 +29,7 @@ final class StatusBarProgressView: NSView {
         case .data(let billing):
             let settings = currentSettings()
             if settings.showProgressBar {
-                return capsuleSize(for: billing, settings: settings)
+                return capsuleLayoutSize(for: billing, settings: settings)
             }
             if settings.showPercentage || settings.showRemaining {
                 let text = displayText(billing: billing, settings: settings)
@@ -45,7 +47,6 @@ final class StatusBarProgressView: NSView {
         var showPercentage: Bool
         var showProgressBar: Bool
         var showRemaining: Bool
-        var textWidth: CGFloat
     }
 
     private struct TextLayout {
@@ -53,16 +54,29 @@ final class StatusBarProgressView: NSView {
         var textSize: NSSize
     }
 
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = .clear
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        wantsLayer = true
+        layer?.backgroundColor = .clear
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
     private func currentSettings() -> RenderSettings {
-        let showPct = AppSettings.showPercentage
-        let showBar = AppSettings.showProgressBar
-        let showRem = AppSettings.showRemainingCost
-        var width: CGFloat = 56
-        if showRem && showPct { width = 96 }
-        else if showRem { width = 72 }
-        else if showPct { width = 56 }
-        else { width = 40 }
-        return RenderSettings(showPercentage: showPct, showProgressBar: showBar, showRemaining: showRem, textWidth: width)
+        RenderSettings(
+            showPercentage: AppSettings.showPercentage,
+            showProgressBar: AppSettings.showProgressBar,
+            showRemaining: AppSettings.showRemainingCost
+        )
     }
 
     func update(state: StatusBarState) {
@@ -102,40 +116,65 @@ final class StatusBarProgressView: NSView {
         )
         let cornerRadius = capsuleRect.height / 2
 
-        drawRoundedRectProgress(ratio: billing.ratioPct / 100, in: capsuleRect, cornerRadius: cornerRadius)
+        drawRoundedRectRingProgress(ratio: billing.ratioPct / 100, in: capsuleRect, cornerRadius: cornerRadius)
 
         let textRect = capsuleRect.insetBy(dx: horizontalPadding, dy: verticalPadding)
         drawCenteredLines(layout.lines, in: textRect, singleSize: 9, dualPrimary: 8.5, dualSecondary: 8)
     }
 
-    private func drawRoundedRectProgress(ratio: Double, in rect: NSRect, cornerRadius: CGFloat) {
-        let trackPath = NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius)
+    /// 圆角矩形环形进度：沿边框描边，背景透明；从顶部中点顺时针填充
+    private func drawRoundedRectRingProgress(ratio: Double, in rect: NSRect, cornerRadius: CGFloat) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
 
-        trackBackgroundColor.setFill()
-        trackPath.fill()
+        let inset = ringLineWidth / 2
+        let strokeRect = rect.insetBy(dx: inset, dy: inset)
+        let radius = max(0, min(cornerRadius - inset, strokeRect.height / 2, strokeRect.width / 2))
+        let path = CGPath(
+            roundedRect: strokeRect,
+            cornerWidth: radius,
+            cornerHeight: radius,
+            transform: nil
+        )
+        let perimeter = ringPerimeter(of: strokeRect, radius: radius)
+        let startPhase = ringPhaseToTopCenter(of: strokeRect, radius: radius)
+
+        ctx.saveGState()
+        ctx.setLineWidth(ringLineWidth)
+        ctx.setLineCap(.round)
+        ctx.setLineJoin(.round)
+
+        ctx.addPath(path)
+        ctx.setStrokeColor(trackRingColor.cgColor)
+        ctx.strokePath()
 
         let clamped = max(0, min(1, ratio))
         if clamped > 0.001 {
-            let progressWidth = max(rect.height, rect.width * CGFloat(clamped))
-            let progressRect = NSRect(x: rect.minX, y: rect.minY, width: progressWidth, height: rect.height)
-
-            NSGraphicsContext.saveGraphicsState()
-            trackPath.addClip()
-            let fillPath = NSBezierPath(roundedRect: progressRect, xRadius: cornerRadius, yRadius: cornerRadius)
-            progressFillColor.setFill()
-            fillPath.fill()
-            NSGraphicsContext.restoreGraphicsState()
+            ctx.setLineDash(phase: startPhase, lengths: [perimeter * clamped, perimeter])
+            ctx.addPath(path)
+            ctx.setStrokeColor(progressRingColor.cgColor)
+            ctx.strokePath()
+            ctx.setLineDash(phase: 0, lengths: [])
         }
 
-        borderColor.setStroke()
-        trackPath.lineWidth = borderWidth
-        trackPath.stroke()
+        ctx.restoreGState()
     }
 
-    private func capsuleSize(for billing: BillingSnapshot, settings: RenderSettings) -> NSSize {
+    private func ringPerimeter(of rect: CGRect, radius: CGFloat) -> CGFloat {
+        2 * (rect.width + rect.height - 4 * radius) + 2 * .pi * radius
+    }
+
+    /// CGPath 圆角矩形起点在左下，换算到顶部中点的相位
+    private func ringPhaseToTopCenter(of rect: CGRect, radius: CGFloat) -> CGFloat {
+        let straightW = rect.width - 2 * radius
+        let straightH = rect.height - 2 * radius
+        let quarterArc = .pi * radius / 2
+        return straightW + quarterArc + straightH + quarterArc + straightW / 2
+    }
+
+    private func capsuleLayoutSize(for billing: BillingSnapshot, settings: RenderSettings) -> NSSize {
         let layout = measureText(billing: billing, settings: settings)
-        let width = layout.textSize.width + horizontalPadding * 2 + borderWidth
-        let height = layout.textSize.height + verticalPadding * 2 + borderWidth
+        let width = layout.textSize.width + horizontalPadding * 2 + ringLineWidth
+        let height = layout.textSize.height + verticalPadding * 2 + ringLineWidth
         return NSSize(width: ceil(width), height: ceil(max(height, 18)))
     }
 
@@ -143,13 +182,12 @@ final class StatusBarProgressView: NSView {
         let lines = innerTextLines(billing: billing, settings: settings)
         if lines.count <= 1 {
             let text = lines.first ?? "—"
-            let attrs = textAttributes(size: 9, weight: .semibold)
-            let size = NSAttributedString(string: text, attributes: attrs).size()
+            let size = NSAttributedString(string: text, attributes: textAttributes(size: 9, weight: .semibold)).size()
             return TextLayout(lines: lines, textSize: size)
         }
 
         let primary = NSAttributedString(string: lines[0], attributes: textAttributes(size: 8.5, weight: .semibold))
-        let secondary = NSAttributedString(string: lines[1], attributes: textAttributes(size: 8, weight: .medium))
+        let secondary = NSAttributedString(string: lines[1], attributes: textAttributes(size: 8, weight: .medium, secondary: true))
         let width = max(primary.size().width, secondary.size().width)
         let height = primary.size().height + 1 + secondary.size().height
         return TextLayout(lines: lines, textSize: NSSize(width: width, height: height))
@@ -169,7 +207,7 @@ final class StatusBarProgressView: NSView {
     private func innerTextLines(billing: BillingSnapshot, settings: RenderSettings) -> [String] {
         var lines: [String] = []
         if settings.showPercentage {
-            lines.append(String(format: "%.1f%%", billing.ratioPct))
+            lines.append(String(format: "%.2f%%", billing.ratioPct))
         }
         if settings.showRemaining {
             lines.append(String(format: "¥%.1f", billing.remaining))
@@ -196,7 +234,7 @@ final class StatusBarProgressView: NSView {
         }
 
         let primary = NSAttributedString(string: lines[0], attributes: textAttributes(size: dualPrimary, weight: .semibold))
-        let secondary = NSAttributedString(string: lines[1], attributes: textAttributes(size: dualSecondary, weight: .medium))
+        let secondary = NSAttributedString(string: lines[1], attributes: textAttributes(size: dualSecondary, weight: .medium, secondary: true))
         let gap: CGFloat = 1
         let totalHeight = primary.size().height + gap + secondary.size().height
         var y = rect.midY + totalHeight / 2 - primary.size().height
@@ -215,34 +253,51 @@ final class StatusBarProgressView: NSView {
         str.draw(at: point)
     }
 
-    private func textAttributes(size: CGFloat, weight: NSFont.Weight) -> [NSAttributedString.Key: Any] {
+    // MARK: - Appearance
+
+    private func isDarkMenuBar(_ appearance: NSAppearance) -> Bool {
+        let best = appearance.bestMatch(from: [.darkAqua, .aqua, .vibrantDark, .vibrantLight])
+        return best == .darkAqua || best == .vibrantDark
+    }
+
+    private var primaryTextColor: NSColor {
+        NSColor(name: "StatusBarPrimaryText") { [weak self] appearance in
+            guard let self else { return .labelColor }
+            return self.isDarkMenuBar(appearance) ? .white : .black
+        }
+    }
+
+    private var secondaryTextColor: NSColor {
+        NSColor(name: "StatusBarSecondaryText") { [weak self] appearance in
+            guard let self else { return .secondaryLabelColor }
+            return self.isDarkMenuBar(appearance)
+                ? NSColor(white: 1.0, alpha: 0.75)
+                : NSColor(white: 0.0, alpha: 0.65)
+        }
+    }
+
+    private var trackRingColor: NSColor {
+        NSColor(name: "StatusBarTrackRing") { [weak self] appearance in
+            guard let self else { return .separatorColor }
+            return self.isDarkMenuBar(appearance)
+                ? NSColor(white: 1.0, alpha: 0.30)
+                : NSColor(white: 0.0, alpha: 0.20)
+        }
+    }
+
+    private var progressRingColor: NSColor {
+        NSColor(name: "StatusBarProgressRing") { [weak self] appearance in
+            guard let self else { return .systemBlue }
+            return self.isDarkMenuBar(appearance)
+                ? NSColor(calibratedRed: 0.25, green: 0.58, blue: 0.98, alpha: 1.0)
+                : NSColor(calibratedRed: 0.05, green: 0.32, blue: 0.78, alpha: 1.0)
+        }
+    }
+
+    private func textAttributes(size: CGFloat, weight: NSFont.Weight, secondary: Bool = false) -> [NSAttributedString.Key: Any] {
         [
             .font: NSFont.monospacedDigitSystemFont(ofSize: size, weight: weight),
-            .foregroundColor: NSColor.labelColor,
+            .foregroundColor: secondary ? secondaryTextColor : primaryTextColor,
         ]
-    }
-
-    private var trackBackgroundColor: NSColor {
-        NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(calibratedRed: 0.22, green: 0.30, blue: 0.38, alpha: 0.45)
-                : NSColor(calibratedRed: 0.88, green: 0.94, blue: 1.0, alpha: 1)
-        }
-    }
-
-    private var progressFillColor: NSColor {
-        NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(calibratedRed: 0.35, green: 0.58, blue: 0.82, alpha: 0.55)
-                : NSColor(calibratedRed: 0.72, green: 0.87, blue: 1.0, alpha: 1)
-        }
-    }
-
-    private var borderColor: NSColor {
-        NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(calibratedRed: 0.45, green: 0.68, blue: 0.95, alpha: 0.85)
-                : NSColor(calibratedRed: 0.45, green: 0.70, blue: 0.98, alpha: 1)
-        }
     }
 }

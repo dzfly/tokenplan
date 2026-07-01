@@ -3,9 +3,13 @@
 # 仓库: git@github.com:dzfly/tokenplan.git
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
 APP_NAME="Token Plan.app"
 ZIP_NAME="TokenPlan.zip"
 RELEASES_DIR="releases"
+RESOURCES="Resources/Info.plist"
 GITHUB_REPO="dzfly/tokenplan"
 APPCAST_RAW_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/main/releases/appcast.xml"
 
@@ -15,21 +19,26 @@ TAG="v${SHORT_VERSION}"
 
 if [[ -z "$SHORT_VERSION" || -z "$BUILD_VERSION" ]]; then
   echo "用法: $0 <shortVersion> <buildNumber>"
-  echo "示例: $0 1.0.1 2"
+  echo "示例: $0 1.0.3 4"
   exit 1
 fi
 
-if [[ ! -d "$APP_NAME" ]]; then
-  echo "未找到 ${APP_NAME}，请先运行 ./build.sh"
+echo "→ 更新版本号并重新编译签名..."
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${SHORT_VERSION}" "$RESOURCES"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUILD_VERSION}" "$RESOURCES"
+./build.sh
+
+echo "→ 验证 .app 代码签名..."
+if ! codesign --verify --deep --strict "${APP_NAME}" 2>/dev/null; then
+  echo "❌ .app 代码签名无效，Sparkle 更新会失败" >&2
+  codesign --verify --deep --strict --verbose=2 "${APP_NAME}" || true
   exit 1
 fi
-
-/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${SHORT_VERSION}" "${APP_NAME}/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUILD_VERSION}" "${APP_NAME}/Contents/Info.plist"
 
 mkdir -p "$RELEASES_DIR"
 rm -f "${RELEASES_DIR}/${ZIP_NAME}"
-ditto -c -k --sequesterRsrc --keepParent "$APP_NAME" "${RELEASES_DIR}/${ZIP_NAME}"
+# --norsrc 避免 __MACOSX 元数据目录
+ditto -c -k --norsrc --keepParent "$APP_NAME" "${RELEASES_DIR}/${ZIP_NAME}"
 
 ZIP_PATH="$(cd "$RELEASES_DIR" && pwd)/${ZIP_NAME}"
 ZIP_LENGTH=$(stat -f%z "$ZIP_PATH")
@@ -52,6 +61,10 @@ if [[ -n "$SPARKLE_SIGN" ]]; then
   SIGN_OUTPUT=$("$SPARKLE_SIGN" "$ZIP_PATH")
   echo "$SIGN_OUTPUT"
   ED_SIGNATURE=$(echo "$SIGN_OUTPUT" | sed -n 's/.*edSignature="\([^"]*\)".*/\1/p')
+  if [[ -n "$ED_SIGNATURE" ]]; then
+    "$SPARKLE_SIGN" --verify "$ZIP_PATH" "$ED_SIGNATURE"
+    echo "✅ Sparkle EdDSA 签名验证通过"
+  fi
 fi
 
 if [[ -z "$ED_SIGNATURE" ]]; then
@@ -89,19 +102,10 @@ echo "   版本: ${SHORT_VERSION} (${BUILD_VERSION})"
 echo ""
 echo "发布到 GitHub（${GITHUB_REPO}）："
 echo ""
-echo "  # 1. 推送 appcast.xml（仅元数据，不含安装包）"
-echo "  git add releases/appcast.xml"
-echo "  git commit -m \"release: ${TAG}\""
-echo "  git push github main"
-echo ""
-echo "  # 2. 创建 Release 并上传 zip（安装包不进 git）"
-echo "  gh release create ${TAG} \\"
-echo "    --repo ${GITHUB_REPO} \\"
+echo "  gh release create ${TAG} --repo ${GITHUB_REPO} \\"
 echo "    --title \"Token Plan ${SHORT_VERSION}\" \\"
-echo "    --notes \"Token Plan ${SHORT_VERSION}\" \\"
-echo "    \"${RELEASES_DIR}/${ZIP_NAME}\""
+echo "    TokenPlan.dmg ${RELEASES_DIR}/${ZIP_NAME}"
 echo ""
-echo "Appcast 地址（Info.plist SUFeedURL）："
-echo "  ${APPCAST_RAW_URL}"
+echo "  # 并推送 appcast.xml 到 GitHub main 分支"
 echo ""
-echo "⚠️  切勿提交：TokenPlan.zip、EdDSA 私钥、JWT/凭证、.env"
+echo "Appcast: ${APPCAST_RAW_URL}"

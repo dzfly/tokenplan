@@ -213,8 +213,13 @@ enum MenuBuilder {
         return "\(n)"
     }
 
-    static func formatCost(_ v: Double?) -> String {
+    static func formatBillingCost(_ v: Double?) -> String {
         guard let v = v else { return "-" }
-        return "¥\(Int(v.rounded()))"
+        return String(format: "¥%.1f", v)
+    }
+
+    static func formatUsageCost(_ v: Double?) -> String {
+        guard let v = v else { return "-" }
+        return String(format: "¥%.4f", v)
     }
 }

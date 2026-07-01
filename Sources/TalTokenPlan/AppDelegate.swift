@@ -17,6 +17,9 @@ import AppKit
 
     private static let loginPollInterval: TimeInterval = 3
     private static let loginTimeout: TimeInterval = 300
+    private static let silentRefreshInterval: TimeInterval = 300
+
+    private var isFetching = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -36,9 +39,9 @@ import AppKit
         bootstrapLoginState()
         AppUpdaterManager.shared.start()
 
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: Self.silentRefreshInterval, repeats: true) { [weak self] _ in
             guard self?.isLoggedIn == true else { return }
-            self?.refresh()
+            self?.refresh(silent: true)
         }
     }
 
@@ -95,10 +98,14 @@ import AppKit
     }
 
     @objc private func statusBarClicked() {
+        if isLoggedIn {
+            refresh(silent: false)
+        }
+
         let menu = MenuBuilder.build(
             data: displayData,
             isLoggedIn: isLoggedIn,
-            onRefresh: { [weak self] in self?.refresh() },
+            onRefresh: { [weak self] in self?.refresh(silent: false) },
             onOpenSettings: { [weak self] in self?.showSettings() },
             onOpenDetail: { [weak self] in self?.openDetailPage() },
             onOpenBrowserLogin: { [weak self] in self?.startBrowserLoginFlow() },
@@ -112,16 +119,19 @@ import AppKit
         statusItem.menu = nil
     }
 
-    private func refresh() {
+    private func refresh(silent: Bool = false) {
         guard TokenStore.load() != nil else {
             isLoggedIn = false
             updateStatusBar(state: .notLoggedIn)
             return
         }
-        guard !isLoading else { return }
-        isLoading = true
+        guard !isFetching else { return }
+        isFetching = true
         isLoggedIn = true
-        updateStatusBar(state: .loading)
+        if !silent {
+            isLoading = true
+            updateStatusBar(state: .loading)
+        }
 
         let group = DispatchGroup()
         var billing: BillingData?
@@ -144,6 +154,7 @@ import AppKit
 
         group.notify(queue: .main) { [weak self] in
             guard let self = self else { return }
+            self.isFetching = false
             self.isLoading = false
             if unauthorized {
                 self.handleUnauthorized()
@@ -161,8 +172,8 @@ import AppKit
             let ratioPct = (cs.usageRatio ?? (cs.used / cs.limit)) * 100
             let ratioStr = String(format: "%.2f", ratioPct)
             data.billingLines = [
-                "已用: \(MenuBuilder.formatCost(cs.used)) / \(MenuBuilder.formatCost(cs.limit))  (\(ratioStr)%)",
-                "剩余: \(MenuBuilder.formatCost(cs.remaining))",
+                "已用: \(MenuBuilder.formatBillingCost(cs.used)) / \(MenuBuilder.formatBillingCost(cs.limit))  (\(ratioStr)%)",
+                "剩余: \(MenuBuilder.formatBillingCost(cs.remaining))",
                 "Token 总计: \(MenuBuilder.formatTokens(b.tokenUsage.totalTokens))",
                 "输入 Token: \(MenuBuilder.formatTokens(b.tokenUsage.inputTokens))",
                 "输出 Token: \(MenuBuilder.formatTokens(b.tokenUsage.outputTokens))"
@@ -173,7 +184,7 @@ import AppKit
 
         data.usageLines = (usage?.list ?? []).map { item in
             let tok = MenuBuilder.formatTokens(item.tokenUsage?.totalTokens)
-            let cost = item.costs.map { MenuBuilder.formatCost($0) } ?? "-"
+            let cost = item.costs.map { MenuBuilder.formatUsageCost($0) } ?? "-"
             return "[\(item.channelName ?? "-")] \(item.model ?? "-"): \(tok) | \(cost)"
         }
 
