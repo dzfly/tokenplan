@@ -48,3 +48,82 @@ SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./build.sh
 
 - Full Disk Access（读取浏览器 Cookie 数据库）
 - 钥匙串（解密 Chromium 加密 Cookie 时的 Safe Storage 密钥）
+
+## 发版流程
+
+代码仓库在内网 GitLab（`origin`），Sparkle 更新源指向 GitHub `dzfly/tokenplan`（只放 release zip + appcast.xml，不含代码）。
+
+### 1. 升版本号
+
+`Resources/Info.plist` 的 `CFBundleShortVersionString` 和 `CFBundleVersion` 各 +1。
+
+### 2. 打包
+
+```bash
+# ad-hoc 打包（Universal Binary，需 Full Disk Access 运行）
+./build.sh
+
+# 签名分发（需 Developer ID Application 证书）
+SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./build.sh
+```
+
+### 3. 生成 zip 与签名
+
+```bash
+ditto -c -k --keepParent "Token Plan.app" releases/TokenPlan.zip
+.build/x86-build/artifacts/sparkle/Sparkle/bin/sign_update releases/TokenPlan.zip
+```
+
+`sign_update` 输出 `sparkle:edSignature="..."` 和 `length="..."`，用于 appcast。
+
+### 4. 更新 appcast.xml
+
+在 `releases/appcast.xml` 顶部新增 `<item>`，填入版本号、edSignature、length，enclosure url 指向 GitHub release：
+
+```xml
+<item>
+    <title>Version X.Y.Z</title>
+    <sparkle:version>BUILD</sparkle:version>
+    <sparkle:shortVersionString>X.Y.Z</sparkle:shortVersionString>
+    <pubDate>RFC822 日期</pubDate>
+    <enclosure
+        url="https://github.com/dzfly/tokenplan/releases/download/vX.Y.Z/TokenPlan.zip"
+        sparkle:edSignature="..."
+        length="..."
+        type="application/octet-stream" />
+</item>
+```
+
+### 5. 提交并打 tag
+
+```bash
+git add Resources/Info.plist releases/appcast.xml
+git commit -m "release:X.Y.Z"
+git tag vX.Y.Z
+git push origin master
+git push origin vX.Y.Z
+```
+
+### 6. 同步 appcast 到 GitHub
+
+GitHub 仓库 `dzfly/tokenplan` 只用于更新分发，main 分支仅含 `releases/appcast.xml` + LICENSE + README。用 API 更新 appcast（`SUFeedURL` 指向这里的 raw 文件）：
+
+```bash
+SHA=$(gh api repos/dzfly/tokenplan/contents/releases/appcast.xml --jq '.sha')
+CONTENT=$(base64 -i releases/appcast.xml)
+gh api -X PUT repos/dzfly/tokenplan/contents/releases/appcast.xml \
+  -f message="release: update appcast for X.Y.Z" \
+  -f content="${CONTENT}" \
+  -f sha="${SHA}"
+```
+
+### 7. 上传 release zip
+
+```bash
+gh release create vX.Y.Z releases/TokenPlan.zip \
+  --repo dzfly/tokenplan \
+  --title "X.Y.Z" \
+  --notes "更新说明"
+```
+
+已装旧版本的用户，Sparkle 会通过 `SUFeedURL` 拉到新 appcast 自动提示更新。

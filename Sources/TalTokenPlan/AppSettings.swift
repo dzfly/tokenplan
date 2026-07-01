@@ -47,6 +47,10 @@ enum AppInfo {
     }
 
     static var version: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
+        if let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String { return v }
+        if let path = Bundle.main.path(forResource: "Info", ofType: "plist"),
+           let dict = NSDictionary(contentsOfFile: path) as? [String: Any],
+           let v = dict["CFBundleShortVersionString"] as? String { return v }
+        return "1.0"
     }
 }

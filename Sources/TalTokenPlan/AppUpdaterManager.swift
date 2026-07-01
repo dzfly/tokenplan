@@ -32,33 +32,19 @@ final class AppUpdaterManager: NSObject, SPUUpdaterDelegate {
 
     // MARK: - SPUUpdaterDelegate
 
-    func updater(_ updater: SPUUpdater, didFinishUpdateCheckForUpdate updateItem: SUAppcastItem?) {
+    func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: Error?) {
         guard manualChecking else { return }
         manualChecking = false
         DispatchQueue.main.async {
-            // updateItem 为 nil 表示无可用更新；有更新时 Sparkle 已自行弹更新窗口
-            if updateItem == nil {
-                self.alertLatest()
+            // Sparkle 2 自带「无新版本/最新版」和更新窗口,这里只在出错时提示
+            if let error = error as NSError? {
+                if error.code == 1001 || error.code == 1002 {
+                    // 无新版本(Sparkle 已提示) / 用户取消,不额外弹窗
+                } else {
+                    self.alertError(error)
+                }
             }
         }
-    }
-
-    func updater(_ updater: SPUUpdater, didEncounterError error: Error) {
-        guard manualChecking else { return }
-        manualChecking = false
-        DispatchQueue.main.async {
-            self.alertError(error)
-        }
-    }
-
-    private func alertLatest() {
-        let alert = NSAlert()
-        alert.messageText = "已是最新版本"
-        alert.informativeText = "当前版本 \(currentVersion()) 已是最新。"
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "好")
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
     }
 
     private func alertError(_ error: Error) {

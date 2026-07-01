@@ -1,35 +1,28 @@
 import AppKit
 
-/// 顶部 tab：圆角矩形分段切换
+/// 顶部 tab：单个指示条点击后左右滑动
 final class SegmentedTabView: NSView {
     private let titles: [String]
     private var buttons: [NSButton] = []
-    private var segmentBackgrounds: [NSView] = []
+    private let indicator = NSView()
     private(set) var selectedIndex = 0
     var onChange: ((Int) -> Void)?
 
-    private let segmentCornerRadius: CGFloat = 8
     private let segmentInset: CGFloat = 3
 
     init(titles: [String]) {
         self.titles = titles
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.cornerRadius = 10
         layer?.cornerCurve = .continuous
         layer?.backgroundColor = NSColor(white: 0, alpha: 0.05).cgColor
 
-        for (i, title) in titles.enumerated() {
-            let bg = NSView()
-            bg.wantsLayer = true
-            bg.layer?.cornerRadius = segmentCornerRadius
-            bg.layer?.cornerCurve = .continuous
-            bg.layer?.backgroundColor = i == 0
-                ? NSColor.controlAccentColor.cgColor
-                : NSColor.clear.cgColor
-            addSubview(bg)
-            segmentBackgrounds.append(bg)
+        indicator.wantsLayer = true
+        indicator.layer?.cornerCurve = .continuous
+        indicator.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        addSubview(indicator)
 
+        for (i, title) in titles.enumerated() {
             let btn = NSButton()
             btn.isBordered = false
             btn.bezelStyle = .inline
@@ -64,20 +57,47 @@ final class SegmentedTabView: NSView {
         guard buttons.indices.contains(index) else { return }
         selectedIndex = index
         for (i, btn) in buttons.enumerated() {
-            let selected = i == index
-            btn.attributedTitle = tabTitle(titles[i], selected: selected)
-            let color = selected ? NSColor.controlAccentColor.cgColor : NSColor.clear.cgColor
-            if animated {
-                NSAnimationContext.runAnimationGroup { ctx in
-                    ctx.duration = 0.2
-                    ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                    segmentBackgrounds[i].animator().layer?.backgroundColor = color
-                }
-            } else {
-                segmentBackgrounds[i].layer?.backgroundColor = color
-            }
+            btn.attributedTitle = tabTitle(titles[i], selected: i == index)
         }
+        moveIndicator(to: index, animated: animated)
         onChange?(index)
+    }
+
+    private func indicatorFrame(for index: Int) -> NSRect {
+        let count = CGFloat(buttons.count)
+        guard count > 0, bounds.width > 0 else { return .zero }
+        let segW = bounds.width / count
+        return NSRect(
+            x: segW * CGFloat(index) + segmentInset,
+            y: segmentInset,
+            width: segW - segmentInset * 2,
+            height: bounds.height - segmentInset * 2
+        )
+    }
+
+    private func moveIndicator(to index: Int, animated: Bool) {
+        let frame = indicatorFrame(for: index)
+        if animated {
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = 0.25
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                indicator.animator().frame = frame
+            }, completionHandler: { [weak self] in
+                self?.updateCornerRadii()
+            })
+        } else {
+            indicator.frame = frame
+            updateCornerRadii()
+        }
+    }
+
+    private func updateCornerRadii() {
+        guard bounds.height > 0 else { return }
+        layer?.cornerRadius = bounds.height / 2
+        let indicatorHeight = indicator.frame.height
+        if indicatorHeight > 0 {
+            indicator.layer?.cornerRadius = indicatorHeight / 2
+        }
     }
 
     override func layout() {
@@ -85,22 +105,26 @@ final class SegmentedTabView: NSView {
         let count = CGFloat(buttons.count)
         guard count > 0, bounds.width > 0 else { return }
         let btnW = bounds.width / count
-        for i in 0..<buttons.count {
-            let frame = NSRect(
-                x: btnW * CGFloat(i) + segmentInset,
-                y: segmentInset,
-                width: btnW - segmentInset * 2,
-                height: bounds.height - segmentInset * 2
-            )
-            segmentBackgrounds[i].frame = frame
-            buttons[i].frame = frame
+        for (i, btn) in buttons.enumerated() {
+            btn.frame = NSRect(x: btnW * CGFloat(i), y: 0, width: btnW, height: bounds.height)
         }
+        if indicator.frame == .zero {
+            indicator.frame = indicatorFrame(for: selectedIndex)
+        }
+        updateCornerRadii()
     }
+}
+
+/// ScrollView 文档视图：翻转坐标系，短内容默认从顶部显示
+private final class FlippedDocumentView: NSView {
+    override var isFlipped: Bool { true }
 }
 
 final class SettingsWindowController: NSWindowController {
     private var segmentedControl: SegmentedTabView!
-    private var contentContainer: NSView!
+    private var contentContainer: NSScrollView!
+    private var documentView: NSView!
+    private var activeDocumentBottomConstraint: NSLayoutConstraint?
     private var generalView: NSView!
     private var aboutView: NSView!
 
@@ -110,7 +134,7 @@ final class SettingsWindowController: NSWindowController {
 
     convenience init() {
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 360),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 440),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -130,17 +154,27 @@ final class SettingsWindowController: NSWindowController {
         segmentedControl.onChange = { [weak self] idx in self?.showTab(idx) }
         segmentedControl.heightAnchor.constraint(equalToConstant: 32).isActive = true
 
-        contentContainer = NSView()
+        contentContainer = NSScrollView()
         contentContainer.translatesAutoresizingMaskIntoConstraints = false
+        contentContainer.hasVerticalScroller = true
+        contentContainer.autohidesScrollers = true
+        contentContainer.drawsBackground = false
+        contentContainer.borderType = .noBorder
+
+        let documentView = FlippedDocumentView()
+        documentView.translatesAutoresizingMaskIntoConstraints = false
+        contentContainer.documentView = documentView
+        self.documentView = documentView
 
         generalView = buildGeneralView()
         aboutView = buildAboutView()
 
         container.addSubview(segmentedControl)
         container.addSubview(contentContainer)
-        contentContainer.addSubview(generalView)
-        contentContainer.addSubview(aboutView)
+        documentView.addSubview(generalView)
+        documentView.addSubview(aboutView)
 
+        let clipView = contentContainer.contentView
         NSLayoutConstraint.activate([
             segmentedControl.topAnchor.constraint(equalTo: container.topAnchor, constant: 20),
             segmentedControl.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
@@ -151,13 +185,18 @@ final class SettingsWindowController: NSWindowController {
             contentContainer.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
             contentContainer.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -20),
 
-            generalView.topAnchor.constraint(equalTo: contentContainer.topAnchor),
-            generalView.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
-            generalView.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
+            documentView.leadingAnchor.constraint(equalTo: clipView.leadingAnchor),
+            documentView.trailingAnchor.constraint(equalTo: clipView.trailingAnchor),
+            documentView.topAnchor.constraint(equalTo: clipView.topAnchor),
+            documentView.widthAnchor.constraint(equalTo: clipView.widthAnchor),
 
-            aboutView.topAnchor.constraint(equalTo: contentContainer.topAnchor),
-            aboutView.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
-            aboutView.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
+            generalView.topAnchor.constraint(equalTo: documentView.topAnchor),
+            generalView.leadingAnchor.constraint(equalTo: documentView.leadingAnchor),
+            generalView.trailingAnchor.constraint(equalTo: documentView.trailingAnchor),
+
+            aboutView.topAnchor.constraint(equalTo: documentView.topAnchor),
+            aboutView.leadingAnchor.constraint(equalTo: documentView.leadingAnchor),
+            aboutView.trailingAnchor.constraint(equalTo: documentView.trailingAnchor),
         ])
 
         showTab(0)
@@ -263,7 +302,17 @@ final class SettingsWindowController: NSWindowController {
             installHint.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
 
-        let outer = NSStackView(views: [displayCard, hintCard])
+        let checkButton = NSButton()
+        checkButton.title = "检查更新"
+        checkButton.bezelStyle = .rounded
+        checkButton.controlSize = .regular
+        checkButton.target = self
+        checkButton.action = #selector(checkForUpdates)
+        let updateCard = cardSection(title: "更新") { stack in
+            stack.addArrangedSubview(checkButton)
+        }
+
+        let outer = NSStackView(views: [displayCard, hintCard, updateCard])
         outer.orientation = .vertical
         outer.alignment = .leading
         outer.spacing = 14
@@ -273,9 +322,10 @@ final class SettingsWindowController: NSWindowController {
             outer.topAnchor.constraint(equalTo: view.topAnchor),
             outer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             outer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            outer.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor),
+            view.bottomAnchor.constraint(equalTo: outer.bottomAnchor),
             displayCard.widthAnchor.constraint(equalTo: outer.widthAnchor),
             hintCard.widthAnchor.constraint(equalTo: outer.widthAnchor),
+            updateCard.widthAnchor.constraint(equalTo: outer.widthAnchor),
         ])
         return view
     }
@@ -298,14 +348,7 @@ final class SettingsWindowController: NSWindowController {
             stack.addArrangedSubview(versionLabel)
         }
 
-        let checkButton = NSButton(title: "检查更新", target: self, action: #selector(checkForUpdates))
-        checkButton.bezelStyle = .rounded
-        checkButton.controlSize = .regular
-        let updateCard = cardSection(title: "更新") { stack in
-            stack.addArrangedSubview(checkButton)
-        }
-
-        let outer = NSStackView(views: [aboutCard, updateCard])
+        let outer = NSStackView(views: [aboutCard])
         outer.orientation = .vertical
         outer.alignment = .leading
         outer.spacing = 14
@@ -315,8 +358,8 @@ final class SettingsWindowController: NSWindowController {
             outer.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
             outer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             outer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            view.bottomAnchor.constraint(equalTo: outer.bottomAnchor, constant: 8),
             aboutCard.widthAnchor.constraint(equalTo: outer.widthAnchor),
-            updateCard.widthAnchor.constraint(equalTo: outer.widthAnchor),
         ])
         return view
     }
@@ -382,6 +425,19 @@ final class SettingsWindowController: NSWindowController {
     private func showTab(_ index: Int) {
         generalView.isHidden = index != 0
         aboutView.isHidden = index != 1
+
+        activeDocumentBottomConstraint?.isActive = false
+        let activeView: NSView = index == 0 ? generalView! : aboutView!
+        activeDocumentBottomConstraint = activeView.bottomAnchor.constraint(equalTo: documentView.bottomAnchor)
+        activeDocumentBottomConstraint?.isActive = true
+
+        scrollContentToTop()
+    }
+
+    private func scrollContentToTop() {
+        let clipView = contentContainer.contentView
+        clipView.scroll(to: .zero)
+        contentContainer.reflectScrolledClipView(clipView)
     }
 
     @objc private func toggleShowRemaining() {

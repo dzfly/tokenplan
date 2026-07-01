@@ -12,7 +12,7 @@ enum FDAGuide {
         2. 点击 + ，添加「\(appName)」
         3. 若已添加，请关闭后重新打开开关
         4. 完全退出并重新启动 \(appName)
-        5. 确保已在 Chrome / Edge / Arc / Tabbit / Safari 中登录 cloud.tal.com
+        5. 确保已在 系统默认浏览器 中登录 cloud.tal.com
 
         授权后再次点击「从浏览器读取凭证」。
         """
