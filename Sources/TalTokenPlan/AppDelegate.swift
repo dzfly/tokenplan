@@ -234,11 +234,16 @@ import AppKit
             let name = item.model ?? "-"
             let tok = MenuBuilder.formatTokens(item.tokenUsage?.totalTokens)
             let cost = item.costs.map { MenuBuilder.formatUsageCost($0) } ?? "-"
-            return UsageItem(name: name, tokens: tok, cost: cost)
+            return UsageItem(
+                time: MenuBuilder.formatRequestTime(item.requestTime),
+                name: name,
+                tokens: tok,
+                cost: cost
+            )
         }
 
         let fmt = DateFormatter()
-        fmt.dateFormat = "HH:mm"
+        fmt.dateFormat = "HH:mm:ss"
         data.lastUpdated = fmt.string(from: Date())
         displayData = data
     }

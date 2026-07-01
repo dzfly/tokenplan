@@ -2,6 +2,7 @@ import AppKit
 import ObjectiveC
 
 struct UsageItem {
+    var time: String
     var name: String
     var tokens: String
     var cost: String
@@ -91,6 +92,11 @@ enum MenuBuilder {
     }
 
     private enum Style {
+        static let usageFontSize: CGFloat = 10
+        static let usageTimeWidth: CGFloat = 76
+        static let usageColumnGap: CGFloat = 3
+        static let usageContentInsetX: CGFloat = 10
+
         static func title(_ text: String) -> NSAttributedString {
             attributed(text, font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold), color: MenuText.caption)
         }
@@ -149,16 +155,20 @@ enum MenuBuilder {
     }
 
     /// 构建一张卡片 NSMenuItem：自上而下布局，数组顺序与视觉顺序一致
-    private static func cardItem(rows: [CardRow]) -> NSMenuItem {
-        let contentWidth = cardWidth - cardInsetX * 2 - contentInsetX * 2
+    private static func cardItem(
+        rows: [CardRow],
+        cardInsetX insetX: CGFloat = cardInsetX,
+        contentInsetX contentX: CGFloat = contentInsetX
+    ) -> NSMenuItem {
+        let contentWidth = cardWidth - insetX * 2 - contentX * 2
         let contentHeight = rows.reduce(0) { $0 + $1.height }
             + rowSpacing * CGFloat(max(0, rows.count - 1))
         let cardHeight = contentHeight + contentInsetTop + contentInsetBottom
         let wrapperHeight = cardHeight + cardInsetY * 2
 
         let wrapper = NSView(frame: NSRect(x: 0, y: 0, width: cardWidth, height: wrapperHeight))
-        let card = NSView(frame: NSRect(x: cardInsetX, y: cardInsetY,
-                                        width: cardWidth - cardInsetX * 2,
+        let card = NSView(frame: NSRect(x: insetX, y: cardInsetY,
+                                        width: cardWidth - insetX * 2,
                                         height: cardHeight))
         card.wantsLayer = true
         card.layer?.cornerRadius = 12
@@ -173,7 +183,7 @@ enum MenuBuilder {
         var y = cardHeight - contentInsetTop
         for row in rows {
             y -= row.height
-            let rowFrame = NSRect(x: contentInsetX, y: y, width: contentWidth, height: row.height)
+            let rowFrame = NSRect(x: contentX, y: y, width: contentWidth, height: row.height)
             row.view.frame = rowFrame
             row.layout?(rowFrame)
             card.addSubview(row.view)
@@ -197,7 +207,8 @@ enum MenuBuilder {
     private static func headerWithIconButton(
         _ text: String,
         host: MenuActionHost,
-        buttons: [(action: MenuActionHost.Action, symbolName: String, accessibilityDesc: String)]
+        buttons: [(action: MenuActionHost.Action, symbolName: String, accessibilityDesc: String)],
+        horizontalInset: CGFloat = 14
     ) -> NSMenuItem {
         let label = NSTextField(labelWithAttributedString: Style.title(text))
         label.sizeToFit()
@@ -222,7 +233,7 @@ enum MenuBuilder {
         let height = max(labelH, btnH, 18) + 2
         let wrapper = NSView(frame: NSRect(x: 0, y: 0, width: cardWidth, height: height))
 
-        var trailingX = cardWidth - 14.0
+        var trailingX = cardWidth - horizontalInset
         for btn in iconButtons.reversed() {
             let btnW = btn.fittingSize.width
             trailingX -= btnW
@@ -231,7 +242,7 @@ enum MenuBuilder {
             trailingX -= 6
         }
 
-        label.frame = NSRect(x: 14, y: (height - labelH) / 2, width: max(0, trailingX - 14), height: labelH)
+        label.frame = NSRect(x: horizontalInset, y: (height - labelH) / 2, width: max(0, trailingX - horizontalInset), height: labelH)
         wrapper.addSubview(label)
 
         let item = NSMenuItem()
@@ -304,29 +315,75 @@ enum MenuBuilder {
         return CardRow(view: line, height: 1)
     }
 
-    /// 顶部图标按钮（独立 menu item，icon-only）
-    /// 用量行：左名称（可截断）+ 右金额（始终可见）
-    private static func usageRow(name: String, tokens: String, cost: String) -> CardRow {
+    /// 用量行：时间 | 模型名 | Token | 金额（Token/金额优先完整显示）
+    private static func usageRow(time: String, name: String, tokens: String, cost: String) -> CardRow {
         let container = NSView()
-        let nameField = NSTextField(labelWithString: "\(name)  \(tokens)")
-        nameField.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        let gap = Style.usageColumnGap
+
+        let timeField = NSTextField(labelWithString: time)
+        timeField.font = .monospacedDigitSystemFont(ofSize: Style.usageFontSize, weight: .regular)
+        timeField.textColor = MenuText.caption
+        timeField.lineBreakMode = .byClipping
+        timeField.sizeToFit()
+
+        let nameField = NSTextField(labelWithString: name)
+        nameField.font = .systemFont(ofSize: Style.usageFontSize, weight: .regular)
         nameField.textColor = MenuText.cardDataRow
-        nameField.lineBreakMode = .byTruncatingMiddle
+        nameField.lineBreakMode = .byTruncatingTail
         nameField.sizeToFit()
 
+        let tokenField = NSTextField(labelWithString: tokens)
+        tokenField.font = .monospacedDigitSystemFont(ofSize: Style.usageFontSize, weight: .regular)
+        tokenField.textColor = MenuText.cardDataRow
+        tokenField.lineBreakMode = .byClipping
+        tokenField.sizeToFit()
+
         let costField = NSTextField(labelWithString: cost)
-        costField.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .medium)
+        costField.font = .monospacedDigitSystemFont(ofSize: Style.usageFontSize, weight: .medium)
         costField.textColor = MenuText.cardAccent
+        costField.lineBreakMode = .byClipping
         costField.sizeToFit()
 
+        container.addSubview(timeField)
         container.addSubview(nameField)
+        container.addSubview(tokenField)
         container.addSubview(costField)
-        return CardRow(view: container, height: max(nameField.fittingSize.height, 18)) { frame in
-            let costW = costField.fittingSize.width
-            nameField.frame = NSRect(x: 0, y: (frame.height - nameField.fittingSize.height) / 2,
-                                     width: frame.width - costW - 8, height: nameField.fittingSize.height)
-            costField.frame = NSRect(x: frame.width - costW, y: (frame.height - costField.fittingSize.height) / 2,
-                                     width: costW, height: costField.fittingSize.height)
+
+        let rowHeight = max(timeField.fittingSize.height, nameField.fittingSize.height, 16)
+        return CardRow(view: container, height: rowHeight) { frame in
+            let costW = ceil(costField.fittingSize.width)
+            let tokenW = ceil(tokenField.fittingSize.width)
+            let timeW = min(Style.usageTimeWidth, ceil(timeField.fittingSize.width))
+
+            let costX = frame.width - costW
+            let tokenX = costX - gap - tokenW
+            let nameX = timeW + gap
+            let nameW = max(0, tokenX - gap - nameX)
+
+            timeField.frame = NSRect(
+                x: 0,
+                y: (frame.height - timeField.fittingSize.height) / 2,
+                width: timeW,
+                height: timeField.fittingSize.height
+            )
+            nameField.frame = NSRect(
+                x: nameX,
+                y: (frame.height - nameField.fittingSize.height) / 2,
+                width: nameW,
+                height: nameField.fittingSize.height
+            )
+            tokenField.frame = NSRect(
+                x: tokenX,
+                y: (frame.height - tokenField.fittingSize.height) / 2,
+                width: tokenW,
+                height: tokenField.fittingSize.height
+            )
+            costField.frame = NSRect(
+                x: costX,
+                y: (frame.height - costField.fittingSize.height) / 2,
+                width: costW,
+                height: costField.fittingSize.height
+            )
         }
     }
 
@@ -372,9 +429,9 @@ enum MenuBuilder {
                 ]))
                 var usageRows: [CardRow] = []
                 for item in data.usageItems {
-                    usageRows.append(usageRow(name: item.name, tokens: item.tokens, cost: item.cost))
+                    usageRows.append(usageRow(time: item.time, name: item.name, tokens: item.tokens, cost: item.cost))
                 }
-                menu.addItem(cardItem(rows: usageRows))
+                menu.addItem(cardItem(rows: usageRows, contentInsetX: Style.usageContentInsetX))
             }
 
             // 操作按钮：设置 + 退出
@@ -387,7 +444,7 @@ enum MenuBuilder {
 
             if !data.lastUpdated.isEmpty {
                 let cap = NSMenuItem()
-                cap.attributedTitle = Style.caption("更新: \(data.lastUpdated)")
+                cap.attributedTitle = Style.caption("上次更新: \(data.lastUpdated)")
                 cap.isEnabled = false
                 menu.addItem(cap)
             }
@@ -440,6 +497,16 @@ enum MenuBuilder {
     static func formatCacheHitRate(_ percent: Double?) -> String {
         guard let percent else { return "-" }
         return String(format: "%.2f%%", percent)
+    }
+
+    static func formatRequestTime(_ timestamp: Int64?) -> String {
+        guard let timestamp, timestamp > 0 else { return "--/-- --:--:--" }
+        let seconds: TimeInterval = timestamp > 1_000_000_000_000
+            ? TimeInterval(timestamp) / 1000
+            : TimeInterval(timestamp)
+        let formatter = DateFormatter()
+        formatter.dateFormat = "M/d HH:mm:ss"
+        return formatter.string(from: Date(timeIntervalSince1970: seconds))
     }
 }
 

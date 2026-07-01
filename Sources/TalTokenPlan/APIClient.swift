@@ -98,7 +98,7 @@ final class APIClient {
     }
 
     func fetchRecentUsage(
-        pageSize: Int = 5,
+        pageSize: Int = 10,
         maxLookbackDays: Int = 30,
         completion: @escaping (Result<UsageResponse, APIError>) -> Void
     ) {
@@ -208,14 +208,11 @@ struct TokenUsageDetail: Decodable {
 
     var hasCacheData: Bool { cacheRead > 0 || cacheWrite > 0 }
 
-    /// 缓存命中率：优先 read/(read+write)，否则 read/(read+input)
+    /// 缓存命中率 = cache_read / inputTokens（Anthropic 计费语义下 inputTokens 已含 cache_read/cache_write/普通 input）
     var cacheHitRatePercent: Double? {
-        if cacheRead + cacheWrite > 0 {
-            return Double(cacheRead) / Double(cacheRead + cacheWrite) * 100
-        }
         let input = inputTokens ?? 0
-        if cacheRead + input > 0 {
-            return Double(cacheRead) / Double(cacheRead + input) * 100
+        if input > 0 {
+            return Double(cacheRead) / Double(input) * 100
         }
         return nil
     }

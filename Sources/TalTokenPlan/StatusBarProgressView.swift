@@ -22,14 +22,18 @@ final class StatusBarProgressView: NSView {
     private let fixedBarHeight: CGFloat = 22
     private let primaryFontSize: CGFloat = 8.5
     private let secondaryFontSize: CGFloat = 8
-    private let lineSpacing: CGFloat = -0.5
+    /// 从字体默认行高中裁掉的 leading，用于压紧双行间距
+    private let lineHeightTrim: CGFloat = 0.5
 
-    private lazy var compactParagraphStyle: NSParagraphStyle = {
+    private func compactParagraphStyle(for font: NSFont) -> NSParagraphStyle {
         let style = NSMutableParagraphStyle()
-        style.lineSpacing = lineSpacing
+        let naturalHeight = font.ascender - font.descender + font.leading
+        let tightHeight = max(font.pointSize, naturalHeight - lineHeightTrim)
+        style.minimumLineHeight = tightHeight
+        style.maximumLineHeight = tightHeight
         style.alignment = .center
         return style
-    }()
+    }
 
     override var isOpaque: Bool { false }
 
@@ -292,10 +296,11 @@ final class StatusBarProgressView: NSView {
     }
 
     private func textAttributes(size: CGFloat, weight: NSFont.Weight, secondary: Bool = false) -> [NSAttributedString.Key: Any] {
-        [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: size, weight: weight),
+        let font = NSFont.monospacedDigitSystemFont(ofSize: size, weight: weight)
+        return [
+            .font: font,
             .foregroundColor: secondary ? secondaryTextColor : primaryTextColor,
-            .paragraphStyle: compactParagraphStyle,
+            .paragraphStyle: compactParagraphStyle(for: font),
         ]
     }
 }
