@@ -59,6 +59,8 @@ SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./build.sh
 
 ### 2. 打包
 
+`./build.sh` 同时生成 `Token Plan.app` 和 `TokenPlan.dmg`（含 /Applications 软链接，支持拖拽安装）。
+
 ```bash
 # ad-hoc 打包（Universal Binary，需 Full Disk Access 运行）
 ./build.sh
@@ -71,6 +73,7 @@ SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./build.sh
 
 ```bash
 ditto -c -k --keepParent "Token Plan.app" releases/TokenPlan.zip
+cp TokenPlan.dmg releases/TokenPlan.dmg
 .build/x86-build/artifacts/sparkle/Sparkle/bin/sign_update releases/TokenPlan.zip
 ```
 
@@ -117,13 +120,13 @@ gh api -X PUT repos/dzfly/tokenplan/contents/releases/appcast.xml \
   -f sha="${SHA}"
 ```
 
-### 7. 上传 release zip
+### 7. 上传 release zip 与 dmg
 
 ```bash
-gh release create vX.Y.Z releases/TokenPlan.zip \
+gh release create vX.Y.Z releases/TokenPlan.zip releases/TokenPlan.dmg \
   --repo dzfly/tokenplan \
   --title "X.Y.Z" \
   --notes "更新说明"
 ```
 
-已装旧版本的用户，Sparkle 会通过 `SUFeedURL` 拉到新 appcast 自动提示更新。
+zip 供 Sparkle 自动更新用，dmg 供新用户手动下载安装。已装旧版本的用户，Sparkle 会通过 `SUFeedURL` 拉到新 appcast 自动提示更新。

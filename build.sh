@@ -76,8 +76,20 @@ codesign --force --sign "$SIGN_IDENTITY" "${APP_NAME}"
 echo "→ 验证签名..."
 codesign --verify --deep --strict --verbose=2 "${APP_NAME}"
 
+echo "→ 生成 DMG..."
+DMG_NAME="TokenPlan.dmg"
+DMG_STAGING=".build/dmg-staging"
+rm -rf "${DMG_STAGING}"
+mkdir -p "${DMG_STAGING}"
+cp -R "${APP_NAME}" "${DMG_STAGING}/"
+ln -s /Applications "${DMG_STAGING}/Applications"
+rm -f "${DMG_NAME}"
+hdiutil create -volname "Token Plan" -srcfolder "${DMG_STAGING}" -ov -format UDZO "${DMG_NAME}" >/dev/null
+rm -rf "${DMG_STAGING}"
+
 echo "✅ 打包完成：${APP_NAME} (Universal: arm64 + x86_64)"
 echo "   运行: open \"${APP_NAME}\""
+echo "   DMG: ${DMG_NAME}"
 if [ "$SIGN_IDENTITY" = "-" ]; then
   echo ""
   echo "   分发签名示例:"
