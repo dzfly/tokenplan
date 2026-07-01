@@ -6,7 +6,7 @@
 ._*
 
 # Custom folder icons
-Icon
+Icon
 
 # Volume root files
 .DocumentRevisions-V100
@@ -62,7 +62,27 @@ timeline.xctimeline
 playground.xcworkspace
 
 # Swift Package Manager
-# Package.resolved
 .build
 Token Plan.app
-releases
+
+# Release 安装包（通过 GitHub Releases 上传，不进 git）
+releases/*.zip
+releases/*.dmg
+TokenPlan.dmg
+
+# 允许提交 appcast 元数据
+!releases/appcast.xml
+
+# ── 安全：切勿提交 ──
+.env
+.env.*
+*.pem
+*.p12
+*.key
+*.mobileprovision
+.sparkle_ed25519*
+*ed25519*private*
+credentials*
+secrets*
+*.token
+jwt*.txt
