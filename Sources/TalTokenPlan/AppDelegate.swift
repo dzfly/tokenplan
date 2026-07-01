@@ -14,12 +14,19 @@ import AppKit
     private var loginPollTimer: Timer?
     private var loginTimeoutTimer: Timer?
     private var isAutoFetchingCookie = false
+    /// Cookie 写入有延迟，验证失败时延迟重试的次数与定时器
+    private var loginRetryCount = 0
+    private static let maxLoginRetry = 3
+    private static let loginRetryInterval: TimeInterval = 4
+    private var loginRetryTimer: Timer?
 
     private static let loginPollInterval: TimeInterval = 3
     private static let loginTimeout: TimeInterval = 300
-    private static let silentRefreshInterval: TimeInterval = 300
+    private static let silentRefreshInterval: TimeInterval = 60
 
     private var isFetching = false
+    /// 从下拉菜单点击刷新后，数据返回时重建菜单
+    private var menuRefreshPending = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -98,25 +105,48 @@ import AppKit
     }
 
     @objc private func statusBarClicked() {
-        if isLoggedIn {
-            refresh(silent: false)
-        }
-
         let menu = MenuBuilder.build(
             data: displayData,
             isLoggedIn: isLoggedIn,
-            onRefresh: { [weak self] in self?.refresh(silent: false) },
-            onOpenSettings: { [weak self] in self?.showSettings() },
+            onRefresh: { [weak self] in self?.refreshFromMenu() },
+            onOpenSettings: { [weak self] in
+                self?.statusItem.menu?.cancelTracking()
+                DispatchQueue.main.async {
+                    self?.showSettings()
+                }
+            },
             onOpenDetail: { [weak self] in self?.openDetailPage() },
             onOpenBrowserLogin: { [weak self] in self?.startBrowserLoginFlow() },
             browserLoginPrompt: browserLoginPrompt,
             onCheckForUpdates: { AppUpdaterManager.shared.checkForUpdates() },
-            onLogout: { [weak self] in self?.logout() }
+            onLogout: { [weak self] in
+                self?.logout()
+                // 登出后立即重建并重新弹出菜单（此时 isLoggedIn=false）
+                DispatchQueue.main.async {
+                    self?.statusItem.menu?.cancelTracking()
+                    self?.statusBarClicked()
+                }
+            }
         )
         menu.delegate = self as? NSMenuDelegate
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
         statusItem.menu = nil
+    }
+
+    private func refreshFromMenu() {
+        menuRefreshPending = true
+        refresh(silent: false)
+    }
+
+    private func reopenMenuIfNeeded() {
+        guard menuRefreshPending else { return }
+        menuRefreshPending = false
+        guard statusItem.menu != nil else { return }
+        statusItem.menu?.cancelTracking()
+        DispatchQueue.main.async { [weak self] in
+            self?.statusBarClicked()
+        }
     }
 
     private func refresh(silent: Bool = false) {
@@ -146,7 +176,7 @@ import AppKit
         }
 
         group.enter()
-        APIClient.shared.fetchTodayUsage { result in
+        APIClient.shared.fetchRecentUsage { result in
             if case .success(let d) = result { usage = d }
             if case .failure(.unauthorized) = result { unauthorized = true }
             group.leave()
@@ -157,10 +187,12 @@ import AppKit
             self.isFetching = false
             self.isLoading = false
             if unauthorized {
+                self.menuRefreshPending = false
                 self.handleUnauthorized()
                 return
             }
             self.updateDisplay(billing: billing, usage: usage)
+            self.reopenMenuIfNeeded()
         }
     }
 
@@ -176,16 +208,33 @@ import AppKit
                 "剩余: \(MenuBuilder.formatBillingCost(cs.remaining))",
                 "Token 总计: \(MenuBuilder.formatTokens(b.tokenUsage.totalTokens))",
                 "输入 Token: \(MenuBuilder.formatTokens(b.tokenUsage.inputTokens))",
-                "输出 Token: \(MenuBuilder.formatTokens(b.tokenUsage.outputTokens))"
+                "输出 Token: \(MenuBuilder.formatTokens(b.tokenUsage.outputTokens))",
             ]
-            data.billing = BillingSnapshot(ratioPct: ratioPct, remaining: cs.remaining)
+            let cacheStats = b.tokenUsage.hasCacheData
+                ? b.tokenUsage
+                : TokenUsageDetail.aggregate(from: usage?.list ?? [])
+            if cacheStats.hasCacheData {
+                data.billingLines += [
+                    "缓存读取: \(MenuBuilder.formatTokens(cacheStats.cacheReadTokens))",
+                    "缓存写入: \(MenuBuilder.formatTokens(cacheStats.cacheWriteTokens))",
+                    "缓存命中率: \(MenuBuilder.formatCacheHitRate(cacheStats.cacheHitRatePercent))",
+                ]
+            }
+            data.billing = BillingSnapshot(ratioPct: ratioPct, remaining: cs.remaining, used: cs.used)
             updateStatusBar(state: .data(data.billing!))
         }
 
-        data.usageLines = (usage?.list ?? []).map { item in
+        let usageList = usage?.listSortedByRequestTimeDesc ?? []
+        data.usageLines = usageList.map { item in
             let tok = MenuBuilder.formatTokens(item.tokenUsage?.totalTokens)
             let cost = item.costs.map { MenuBuilder.formatUsageCost($0) } ?? "-"
             return "[\(item.channelName ?? "-")] \(item.model ?? "-"): \(tok) | \(cost)"
+        }
+        data.usageItems = usageList.map { item in
+            let name = item.model ?? "-"
+            let tok = MenuBuilder.formatTokens(item.tokenUsage?.totalTokens)
+            let cost = item.costs.map { MenuBuilder.formatUsageCost($0) } ?? "-"
+            return UsageItem(name: name, tokens: tok, cost: cost)
         }
 
         let fmt = DateFormatter()
@@ -247,11 +296,40 @@ import AppKit
         updateStatusBar(state: .notLoggedIn)
     }
 
+    /// Cookie 写入有延迟：验证失败后延迟重新读取并验证，最多 maxLoginRetry 次
+    private func scheduleLoginRetry() {
+        guard loginRetryCount < Self.maxLoginRetry else {
+            loginRetryCount = 0
+            TokenStore.delete()
+            browserLoginPrompt = .needsLogin
+            showUnauthorizedAfterRead()
+            return
+        }
+        loginRetryCount += 1
+        updateStatusBar(state: .loading)
+        loginRetryTimer?.invalidate()
+        loginRetryTimer = Timer.scheduledTimer(withTimeInterval: Self.loginRetryInterval, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            // 重新读最新 Cookie + 验证
+            CookieReaderClient.fetchToken { [weak self] result in
+                guard let self else { return }
+                switch result {
+                case .success(let token):
+                    self.verifyAndCompleteLogin(token: token, silent: true)
+                case .failure:
+                    self.scheduleLoginRetry()
+                }
+            }
+        }
+    }
+
     private func stopLoginPolling() {
         loginPollTimer?.invalidate()
         loginPollTimer = nil
         loginTimeoutTimer?.invalidate()
         loginTimeoutTimer = nil
+        loginRetryTimer?.invalidate()
+        loginRetryTimer = nil
     }
 
     private func attemptAutoLoginFromBrowser(silent: Bool) {
@@ -316,15 +394,15 @@ import AppKit
             switch result {
             case .success:
                 self.isVerifyingLogin = false
+                self.loginRetryCount = 0
                 self.finishLoginSuccess()
             case .failure(.unauthorized) where bearerFirst:
                 TokenStore.save(token)
                 self.verifyBillingWithFallback(token: token, bearerFirst: false)
             case .failure(.unauthorized):
                 self.isVerifyingLogin = false
-                TokenStore.delete()
-                self.browserLoginPrompt = .needsLogin
-                self.showUnauthorizedAfterRead()
+                // Cookie 可能刚写入还未稳定，延迟重试读取+验证
+                self.scheduleLoginRetry()
             case .failure:
                 self.isVerifyingLogin = false
                 TokenStore.delete()

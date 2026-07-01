@@ -1,18 +1,116 @@
 import AppKit
 
+/// 顶部 tab：圆角矩形分段切换
+final class SegmentedTabView: NSView {
+    private let titles: [String]
+    private var buttons: [NSButton] = []
+    private var segmentBackgrounds: [NSView] = []
+    private(set) var selectedIndex = 0
+    var onChange: ((Int) -> Void)?
+
+    private let segmentCornerRadius: CGFloat = 8
+    private let segmentInset: CGFloat = 3
+
+    init(titles: [String]) {
+        self.titles = titles
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 10
+        layer?.cornerCurve = .continuous
+        layer?.backgroundColor = NSColor(white: 0, alpha: 0.05).cgColor
+
+        for (i, title) in titles.enumerated() {
+            let bg = NSView()
+            bg.wantsLayer = true
+            bg.layer?.cornerRadius = segmentCornerRadius
+            bg.layer?.cornerCurve = .continuous
+            bg.layer?.backgroundColor = i == 0
+                ? NSColor.controlAccentColor.cgColor
+                : NSColor.clear.cgColor
+            addSubview(bg)
+            segmentBackgrounds.append(bg)
+
+            let btn = NSButton()
+            btn.isBordered = false
+            btn.bezelStyle = .inline
+            btn.attributedTitle = tabTitle(title, selected: i == 0)
+            btn.alignment = .center
+            btn.tag = i
+            btn.target = self
+            btn.action = #selector(tabClicked(_:))
+            btn.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(btn)
+            buttons.append(btn)
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func tabTitle(_ title: String, selected: Bool) -> NSAttributedString {
+        NSAttributedString(
+            string: title,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 13, weight: selected ? .semibold : .medium),
+                .foregroundColor: selected ? NSColor.white : NSColor.labelColor,
+            ]
+        )
+    }
+
+    @objc private func tabClicked(_ sender: NSButton) {
+        select(sender.tag, animated: true)
+    }
+
+    func select(_ index: Int, animated: Bool) {
+        guard buttons.indices.contains(index) else { return }
+        selectedIndex = index
+        for (i, btn) in buttons.enumerated() {
+            let selected = i == index
+            btn.attributedTitle = tabTitle(titles[i], selected: selected)
+            let color = selected ? NSColor.controlAccentColor.cgColor : NSColor.clear.cgColor
+            if animated {
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.2
+                    ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    segmentBackgrounds[i].animator().layer?.backgroundColor = color
+                }
+            } else {
+                segmentBackgrounds[i].layer?.backgroundColor = color
+            }
+        }
+        onChange?(index)
+    }
+
+    override func layout() {
+        super.layout()
+        let count = CGFloat(buttons.count)
+        guard count > 0, bounds.width > 0 else { return }
+        let btnW = bounds.width / count
+        for i in 0..<buttons.count {
+            let frame = NSRect(
+                x: btnW * CGFloat(i) + segmentInset,
+                y: segmentInset,
+                width: btnW - segmentInset * 2,
+                height: bounds.height - segmentInset * 2
+            )
+            segmentBackgrounds[i].frame = frame
+            buttons[i].frame = frame
+        }
+    }
+}
+
 final class SettingsWindowController: NSWindowController {
-    private var segmentedControl: NSSegmentedControl!
+    private var segmentedControl: SegmentedTabView!
     private var contentContainer: NSView!
     private var generalView: NSView!
     private var aboutView: NSView!
 
-    private var showRemainingSwitch: NSButton!
-    private var showPercentageSwitch: NSButton!
-    private var showProgressBarSwitch: NSButton!
+    private var showRemainingSwitch: NSSwitch!
+    private var showPercentageSwitch: NSSwitch!
+    private var showProgressBarSwitch: NSSwitch!
 
     convenience init() {
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 300),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 360),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -26,9 +124,11 @@ final class SettingsWindowController: NSWindowController {
     private func setupUI() {
         let container = window!.contentView!
 
-        segmentedControl = NSSegmentedControl(labels: ["通用", "关于"], trackingMode: .selectOne, target: self, action: #selector(tabChanged))
-        segmentedControl.selectedSegment = 0
+        // 顶部 tab：指示条左右移动样式
+        segmentedControl = SegmentedTabView(titles: ["通用", "关于"])
         segmentedControl.translatesAutoresizingMaskIntoConstraints = false
+        segmentedControl.onChange = { [weak self] idx in self?.showTab(idx) }
+        segmentedControl.heightAnchor.constraint(equalToConstant: 32).isActive = true
 
         contentContainer = NSView()
         contentContainer.translatesAutoresizingMaskIntoConstraints = false
@@ -42,95 +142,241 @@ final class SettingsWindowController: NSWindowController {
         contentContainer.addSubview(aboutView)
 
         NSLayoutConstraint.activate([
-            segmentedControl.topAnchor.constraint(equalTo: container.topAnchor, constant: 16),
+            segmentedControl.topAnchor.constraint(equalTo: container.topAnchor, constant: 20),
             segmentedControl.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
             segmentedControl.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
 
             contentContainer.topAnchor.constraint(equalTo: segmentedControl.bottomAnchor, constant: 16),
-            contentContainer.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            contentContainer.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            contentContainer.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            contentContainer.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
+            contentContainer.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
+            contentContainer.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -20),
 
             generalView.topAnchor.constraint(equalTo: contentContainer.topAnchor),
-            generalView.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: 20),
-            generalView.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -20),
-            generalView.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor),
+            generalView.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
+            generalView.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
 
             aboutView.topAnchor.constraint(equalTo: contentContainer.topAnchor),
-            aboutView.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: 20),
-            aboutView.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -20),
-            aboutView.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor),
+            aboutView.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
+            aboutView.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
         ])
 
         showTab(0)
     }
 
+    // MARK: - Card
+
+    /// 纯色卡片容器（无毛玻璃）
+    private func makeCard() -> NSView {
+        let card = NSView()
+        card.wantsLayer = true
+        card.layer?.cornerRadius = 12
+        card.layer?.cornerCurve = .continuous
+        card.layer?.masksToBounds = true
+        card.layer?.backgroundColor = cardFillColor().cgColor
+        card.layer?.borderWidth = 0.5
+        card.layer?.borderColor = cardBorderColor().cgColor
+        card.translatesAutoresizingMaskIntoConstraints = false
+        return card
+    }
+
+    private func cardFillColor() -> NSColor {
+        NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(white: 1.0, alpha: 0.07)
+            : NSColor(white: 0.0, alpha: 0.04)
+    }
+
+    private func cardBorderColor() -> NSColor {
+        NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(white: 1.0, alpha: 0.12)
+            : NSColor(white: 0.0, alpha: 0.08)
+    }
+
+    private func cardSection(title: String, content: (NSStackView) -> Void) -> NSView {
+        let wrapper = NSView()
+        wrapper.translatesAutoresizingMaskIntoConstraints = false
+
+        let card = makeCard()
+        wrapper.addSubview(card)
+        NSLayoutConstraint.activate([
+            card.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor),
+            card.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor),
+            card.topAnchor.constraint(equalTo: wrapper.topAnchor),
+            card.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor),
+        ])
+
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        titleLabel.textColor = .secondaryLabelColor
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let contentStack = NSStackView()
+        contentStack.orientation = .vertical
+        contentStack.alignment = .leading
+        contentStack.spacing = 10
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+
+        card.addSubview(titleLabel)
+        card.addSubview(contentStack)
+        NSLayoutConstraint.activate([
+            titleLabel.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
+            titleLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            titleLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+
+            contentStack.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8),
+            contentStack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            contentStack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+            contentStack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
+        ])
+
+        content(contentStack)
+        return wrapper
+    }
+
+    // MARK: - General
+
     private func buildGeneralView() -> NSView {
         let view = NSView()
         view.translatesAutoresizingMaskIntoConstraints = false
 
-        showRemainingSwitch = makeSwitch(title: "显示剩余费用", value: AppSettings.showRemainingCost, action: #selector(toggleShowRemaining))
-        showPercentageSwitch = makeSwitch(title: "显示百分比", value: AppSettings.showPercentage, action: #selector(toggleShowPercentage))
-        showProgressBarSwitch = makeSwitch(title: "进度条", value: AppSettings.showProgressBar, action: #selector(toggleShowProgressBar))
+        showRemainingSwitch = makeSwitch(title: "", value: AppSettings.showRemainingCost, action: #selector(toggleShowRemaining))
+        showPercentageSwitch = makeSwitch(title: "", value: AppSettings.showPercentage, action: #selector(toggleShowPercentage))
+        showProgressBarSwitch = makeSwitch(title: "", value: AppSettings.showProgressBar, action: #selector(toggleShowProgressBar))
+
+        let remainingRow = switchRow(title: "显示剩余金额", subtitle: "关闭则显示花费金额", sw: showRemainingSwitch)
+        let percentageRow = switchRow(title: "显示百分比", subtitle: nil, sw: showPercentageSwitch)
+        let progressRow = switchRow(title: "显示进度条", subtitle: nil, sw: showProgressBarSwitch)
+
+        let displayCard = cardSection(title: "状态栏显示") { stack in
+            [remainingRow, percentageRow, progressRow].forEach {
+                stack.addArrangedSubview($0)
+                stack.addArrangedSubview(self.separator())
+            }
+        }
 
         let installHint = NSTextField(wrappingLabelWithString: "登录：在默认浏览器完成 cloud.tal.com 登录后，使用「从浏览器读取凭证」。首次读取时请在钥匙串弹窗中点「始终允许」。")
-        installHint.font = NSFont.systemFont(ofSize: 11)
+        installHint.font = .systemFont(ofSize: 11)
         installHint.textColor = .secondaryLabelColor
         installHint.translatesAutoresizingMaskIntoConstraints = false
 
-        let stack = NSStackView(views: [showRemainingSwitch, showPercentageSwitch, showProgressBarSwitch, installHint])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 14
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
+        let hintCard = cardSection(title: "登录说明") { stack in
+            stack.addArrangedSubview(installHint)
+            installHint.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
 
+        let outer = NSStackView(views: [displayCard, hintCard])
+        outer.orientation = .vertical
+        outer.alignment = .leading
+        outer.spacing = 14
+        outer.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(outer)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
-            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            installHint.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            outer.topAnchor.constraint(equalTo: view.topAnchor),
+            outer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            outer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            outer.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor),
+            displayCard.widthAnchor.constraint(equalTo: outer.widthAnchor),
+            hintCard.widthAnchor.constraint(equalTo: outer.widthAnchor),
         ])
         return view
     }
+
+    // MARK: - About
 
     private func buildAboutView() -> NSView {
         let view = NSView()
         view.translatesAutoresizingMaskIntoConstraints = false
 
         let nameLabel = NSTextField(labelWithString: AppInfo.name)
-        nameLabel.font = NSFont.systemFont(ofSize: 20, weight: .semibold)
+        nameLabel.font = .systemFont(ofSize: 20, weight: .semibold)
 
         let versionLabel = NSTextField(labelWithString: "版本 \(AppInfo.version)")
-        versionLabel.font = NSFont.systemFont(ofSize: 13)
+        versionLabel.font = .systemFont(ofSize: 13)
         versionLabel.textColor = .secondaryLabelColor
 
-        let stack = NSStackView(views: [nameLabel, versionLabel])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 8
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
+        let aboutCard = cardSection(title: "关于") { stack in
+            stack.addArrangedSubview(nameLabel)
+            stack.addArrangedSubview(versionLabel)
+        }
 
+        let checkButton = NSButton(title: "检查更新", target: self, action: #selector(checkForUpdates))
+        checkButton.bezelStyle = .rounded
+        checkButton.controlSize = .regular
+        let updateCard = cardSection(title: "更新") { stack in
+            stack.addArrangedSubview(checkButton)
+        }
+
+        let outer = NSStackView(views: [aboutCard, updateCard])
+        outer.orientation = .vertical
+        outer.alignment = .leading
+        outer.spacing = 14
+        outer.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(outer)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 24),
-            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            outer.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
+            outer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            outer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            aboutCard.widthAnchor.constraint(equalTo: outer.widthAnchor),
+            updateCard.widthAnchor.constraint(equalTo: outer.widthAnchor),
         ])
         return view
     }
 
-    private func makeSwitch(title: String, value: Bool, action: Selector) -> NSButton {
-        let btn = NSButton()
-        btn.setButtonType(.switch)
-        btn.title = title
-        btn.target = self
-        btn.action = action
-        btn.state = value ? .on : .off
-        return btn
+    @objc private func checkForUpdates() {
+        AppUpdaterManager.shared.checkForUpdates()
     }
 
-    @objc private func tabChanged() {
-        showTab(segmentedControl.selectedSegment)
+    // MARK: - Helpers
+
+    private func makeSwitch(title: String, value: Bool, action: Selector) -> NSSwitch {
+        let s = NSSwitch()
+        s.state = value ? .on : .off
+        s.target = self
+        s.action = action
+        s.translatesAutoresizingMaskIntoConstraints = false
+        return s
+    }
+
+    /// 标签 + 右侧开关横排，可选副标题
+    private func switchRow(title: String, subtitle: String?, sw: NSView) -> NSView {
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 13, weight: .medium)
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        let row = NSView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(label)
+        row.addSubview(sw)
+
+        var constraints: [NSLayoutConstraint] = [
+            label.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+            label.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            sw.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+            sw.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            row.heightAnchor.constraint(greaterThanOrEqualToConstant: 24),
+        ]
+
+        if let subtitle = subtitle {
+            let sub = NSTextField(labelWithString: subtitle)
+            sub.font = .systemFont(ofSize: 11)
+            sub.textColor = .secondaryLabelColor
+            sub.translatesAutoresizingMaskIntoConstraints = false
+            row.addSubview(sub)
+            constraints += [
+                sub.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+                sub.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 2),
+                sw.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            ]
+        }
+        NSLayoutConstraint.activate(constraints)
+        return row
+    }
+
+    private func separator() -> NSView {
+        let line = NSBox()
+        line.boxType = .separator
+        line.translatesAutoresizingMaskIntoConstraints = false
+        line.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        return line
     }
 
     private func showTab(_ index: Int) {

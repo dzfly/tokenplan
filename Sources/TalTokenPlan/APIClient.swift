@@ -97,25 +97,73 @@ final class APIClient {
         request("codingPlan/channelList", completion: completion)
     }
 
-    func fetchTodayUsage(completion: @escaping (Result<UsageResponse, APIError>) -> Void) {
+    func fetchRecentUsage(
+        pageSize: Int = 5,
+        maxLookbackDays: Int = 30,
+        completion: @escaping (Result<UsageResponse, APIError>) -> Void
+    ) {
+        fetchUsage(dayOffset: 0, pageSize: pageSize, maxLookbackDays: maxLookbackDays, completion: completion)
+    }
+
+    private func fetchUsage(
+        dayOffset: Int,
+        pageSize: Int,
+        maxLookbackDays: Int,
+        completion: @escaping (Result<UsageResponse, APIError>) -> Void
+    ) {
         let cal = Calendar.current
         let now = Date()
-        let start = cal.startOfDay(for: now)
+        let targetDay = cal.date(byAdding: .day, value: -dayOffset, to: cal.startOfDay(for: now))!
+        let start = cal.startOfDay(for: targetDay)
+        let end: Date
+        if dayOffset == 0 {
+            end = now
+        } else if let nextDay = cal.date(byAdding: .day, value: 1, to: start) {
+            end = nextDay.addingTimeInterval(-1)
+        } else {
+            completion(.failure(.unknown))
+            return
+        }
+
         let startMs = String(Int64(start.timeIntervalSince1970 * 1000))
-        let endMs = String(Int64(now.timeIntervalSince1970 * 1000))
+        let endMs = String(Int64(end.timeIntervalSince1970 * 1000))
         request("codingPlan/usage", queryItems: [
             URLQueryItem(name: "startTime", value: startMs),
             URLQueryItem(name: "endTime", value: endMs),
             URLQueryItem(name: "page", value: "1"),
-            URLQueryItem(name: "pageSize", value: "5"),
-        ], completion: completion)
+            URLQueryItem(name: "pageSize", value: String(pageSize)),
+        ], completion: { (result: Result<UsageResponse, APIError>) in
+            switch result {
+            case .success(let response):
+                if Self.hasUsageData(response) {
+                    completion(.success(response))
+                } else if dayOffset + 1 < maxLookbackDays {
+                    self.fetchUsage(
+                        dayOffset: dayOffset + 1,
+                        pageSize: pageSize,
+                        maxLookbackDays: maxLookbackDays,
+                        completion: completion
+                    )
+                } else {
+                    completion(.success(response))
+                }
+            case .failure(.unauthorized):
+                completion(.failure(.unauthorized))
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        })
+    }
+
+    private static func hasUsageData(_ response: UsageResponse) -> Bool {
+        !(response.list ?? []).isEmpty
     }
 }
 
 // data.costSummary + data.tokenUsage
 struct BillingData: Decodable {
     let costSummary: CostSummary
-    let tokenUsage: TokenUsage
+    let tokenUsage: TokenUsageDetail
 
     struct CostSummary: Decodable {
         let used: Double
@@ -123,10 +171,90 @@ struct BillingData: Decodable {
         let remaining: Double
         let usageRatio: Double?
     }
-    struct TokenUsage: Decodable {
-        let totalTokens: Int64?
-        let inputTokens: Int64?
-        let outputTokens: Int64?
+}
+
+struct TokenUsageDetail: Decodable {
+    let totalTokens: Int64?
+    let inputTokens: Int64?
+    let outputTokens: Int64?
+    let cacheReadTokens: Int64?
+    let cacheWriteTokens: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case totalTokens
+        case inputTokens
+        case outputTokens
+        case cacheReadTokens
+        case cacheWriteTokens
+        case cacheReadInputTokens
+        case cacheCreationInputTokens
+        case cacheWriteInputTokens
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        totalTokens = try container.decodeIfPresent(Int64.self, forKey: .totalTokens)
+        inputTokens = try container.decodeIfPresent(Int64.self, forKey: .inputTokens)
+        outputTokens = try container.decodeIfPresent(Int64.self, forKey: .outputTokens)
+        cacheReadTokens = try container.decodeIfPresent(Int64.self, forKey: .cacheReadTokens)
+            ?? container.decodeIfPresent(Int64.self, forKey: .cacheReadInputTokens)
+        cacheWriteTokens = try container.decodeIfPresent(Int64.self, forKey: .cacheWriteTokens)
+            ?? container.decodeIfPresent(Int64.self, forKey: .cacheCreationInputTokens)
+            ?? container.decodeIfPresent(Int64.self, forKey: .cacheWriteInputTokens)
+    }
+
+    var cacheRead: Int64 { cacheReadTokens ?? 0 }
+    var cacheWrite: Int64 { cacheWriteTokens ?? 0 }
+
+    var hasCacheData: Bool { cacheRead > 0 || cacheWrite > 0 }
+
+    /// 缓存命中率：优先 read/(read+write)，否则 read/(read+input)
+    var cacheHitRatePercent: Double? {
+        if cacheRead + cacheWrite > 0 {
+            return Double(cacheRead) / Double(cacheRead + cacheWrite) * 100
+        }
+        let input = inputTokens ?? 0
+        if cacheRead + input > 0 {
+            return Double(cacheRead) / Double(cacheRead + input) * 100
+        }
+        return nil
+    }
+
+    static func aggregate(from items: [UsageResponse.UsageItem]) -> TokenUsageDetail {
+        var total: Int64 = 0
+        var input: Int64 = 0
+        var output: Int64 = 0
+        var cacheRead: Int64 = 0
+        var cacheWrite: Int64 = 0
+        for item in items {
+            guard let usage = item.tokenUsage else { continue }
+            total += usage.totalTokens ?? 0
+            input += usage.inputTokens ?? 0
+            output += usage.outputTokens ?? 0
+            cacheRead += usage.cacheRead
+            cacheWrite += usage.cacheWrite
+        }
+        return TokenUsageDetail(
+            totalTokens: total,
+            inputTokens: input,
+            outputTokens: output,
+            cacheReadTokens: cacheRead,
+            cacheWriteTokens: cacheWrite
+        )
+    }
+
+    private init(
+        totalTokens: Int64?,
+        inputTokens: Int64?,
+        outputTokens: Int64?,
+        cacheReadTokens: Int64?,
+        cacheWriteTokens: Int64?
+    ) {
+        self.totalTokens = totalTokens
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.cacheReadTokens = cacheReadTokens
+        self.cacheWriteTokens = cacheWriteTokens
     }
 }
 
@@ -142,14 +270,45 @@ struct UsageResponse: Decodable {
     let total: Int?
     let list: [UsageItem]?
 
+    var listSortedByRequestTimeDesc: [UsageItem] {
+        (list ?? []).sorted { ($0.requestTime ?? 0) > ($1.requestTime ?? 0) }
+    }
+
     struct UsageItem: Decodable {
         let model: String?
         let costs: Double?
         let channelName: String?
-        let tokenUsage: ItemTokenUsage?
+        let tokenUsage: TokenUsageDetail?
+        let requestTime: Int64?
 
-        struct ItemTokenUsage: Decodable {
-            let totalTokens: Int64?
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            model = try container.decodeIfPresent(String.self, forKey: .model)
+            costs = try container.decodeIfPresent(Double.self, forKey: .costs)
+            channelName = try container.decodeIfPresent(String.self, forKey: .channelName)
+            tokenUsage = try container.decodeIfPresent(TokenUsageDetail.self, forKey: .tokenUsage)
+            requestTime = Self.decodeTimestamp(from: container, key: .requestTime)
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case model
+            case costs
+            case channelName
+            case tokenUsage
+            case requestTime
+        }
+
+        private static func decodeTimestamp(
+            from container: KeyedDecodingContainer<CodingKeys>,
+            key: CodingKeys
+        ) -> Int64? {
+            if let value = try? container.decodeIfPresent(Int64.self, forKey: key) { return value }
+            if let value = try? container.decodeIfPresent(Int.self, forKey: key) { return Int64(value) }
+            if let text = try? container.decodeIfPresent(String.self, forKey: key) {
+                if let value = Int64(text) { return value }
+                if let value = Double(text) { return Int64(value) }
+            }
+            return nil
         }
     }
 }
