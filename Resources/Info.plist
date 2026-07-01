@@ -39,6 +39,14 @@
     </array>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2026 TAL. All rights reserved.</string>
+    <key>SUFeedURL</key>
+    <string>https://git.100tal.com/bigclass_xueyanios_tools/tal-token-plan/-/raw/main/releases/appcast.xml</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUAllowsAutomaticUpdates</key>
+    <false/>
+    <key>SUPublicEDKey</key>
+    <string>BkXqo4YtKku8oj45XwPxfDdn6mnpmhTf94ftOwZz4G0=</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>

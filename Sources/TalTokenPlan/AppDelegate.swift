@@ -10,6 +10,13 @@ import AppKit
     private var isLoggedIn = false
     private var isVerifyingLogin = false
     private var isHandlingUnauthorized = false
+    private var browserLoginPrompt: BrowserLoginPrompt = .needsLogin
+    private var loginPollTimer: Timer?
+    private var loginTimeoutTimer: Timer?
+    private var isAutoFetchingCookie = false
+
+    private static let loginPollInterval: TimeInterval = 3
+    private static let loginTimeout: TimeInterval = 300
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -27,6 +34,7 @@ import AppKit
         )
 
         bootstrapLoginState()
+        AppUpdaterManager.shared.start()
 
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             guard self?.isLoggedIn == true else { return }
@@ -42,7 +50,9 @@ import AppKit
         }
 
         isLoggedIn = false
+        browserLoginPrompt = .needsLogin
         updateStatusBar(state: .notLoggedIn)
+        attemptAutoLoginFromBrowser(silent: true)
     }
 
     private func setupStatusBarView() {
@@ -91,8 +101,9 @@ import AppKit
             onRefresh: { [weak self] in self?.refresh() },
             onOpenSettings: { [weak self] in self?.showSettings() },
             onOpenDetail: { [weak self] in self?.openDetailPage() },
-            onOpenBrowserLogin: { [weak self] in self?.openBrowserLogin() },
-            onReadBrowserCookies: { [weak self] in self?.readFromBrowserHelper() },
+            onOpenBrowserLogin: { [weak self] in self?.startBrowserLoginFlow() },
+            browserLoginPrompt: browserLoginPrompt,
+            onCheckForUpdates: { AppUpdaterManager.shared.checkForUpdates() },
             onLogout: { [weak self] in self?.logout() }
         )
         menu.delegate = self as? NSMenuDelegate
@@ -162,7 +173,7 @@ import AppKit
 
         data.usageLines = (usage?.list ?? []).map { item in
             let tok = MenuBuilder.formatTokens(item.tokenUsage?.totalTokens)
-            let cost = item.costs.map { String(format: "¥%.4f", $0) } ?? "-"
+            let cost = item.costs.map { MenuBuilder.formatCost($0) } ?? "-"
             return "[\(item.channelName ?? "-")] \(item.model ?? "-"): \(tok) | \(cost)"
         }
 
@@ -172,18 +183,42 @@ import AppKit
         displayData = data
     }
 
-    private func openBrowserLogin() {
+    private func startBrowserLoginFlow() {
         NSWorkspace.shared.open(AppURLs.detailPage)
+        browserLoginPrompt = .waiting
+        startLoginPolling()
     }
 
-    private func readFromBrowserHelper() {
-        updateStatusBar(state: .loading)
+    private func startLoginPolling() {
+        stopLoginPolling()
+        browserLoginPrompt = .waiting
+
+        loginPollTimer = Timer.scheduledTimer(withTimeInterval: Self.loginPollInterval, repeats: true) { [weak self] _ in
+            self?.pollBrowserCookie(silent: true)
+        }
+        loginPollTimer?.tolerance = 0.5
+
+        loginTimeoutTimer = Timer.scheduledTimer(withTimeInterval: Self.loginTimeout, repeats: false) { [weak self] _ in
+            self?.handleLoginPollTimeout()
+        }
+
+        pollBrowserCookie(silent: true)
+    }
+
+    private func pollBrowserCookie(silent: Bool) {
+        guard !isLoggedIn, !isVerifyingLogin else {
+            stopLoginPolling()
+            return
+        }
 
         CookieReaderClient.fetchToken { [weak self] result in
             guard let self else { return }
             switch result {
             case .success(let token):
-                self.verifyAndCompleteLogin(token: token)
+                self.stopLoginPolling()
+                self.verifyAndCompleteLogin(token: token, silent: silent)
+            case .failure where silent:
+                break
             case .failure(let error):
                 self.updateStatusBar(state: .notLoggedIn)
                 if error.needsFullDiskAccess {
@@ -195,24 +230,67 @@ import AppKit
         }
     }
 
-    private func verifyAndCompleteLogin(token: String) {
+    private func handleLoginPollTimeout() {
+        stopLoginPolling()
+        browserLoginPrompt = .timedOut
+        updateStatusBar(state: .notLoggedIn)
+    }
+
+    private func stopLoginPolling() {
+        loginPollTimer?.invalidate()
+        loginPollTimer = nil
+        loginTimeoutTimer?.invalidate()
+        loginTimeoutTimer = nil
+    }
+
+    private func attemptAutoLoginFromBrowser(silent: Bool) {
+        guard !isAutoFetchingCookie, !isVerifyingLogin else { return }
+        isAutoFetchingCookie = true
+        updateStatusBar(state: .loading)
+
+        CookieReaderClient.fetchToken { [weak self] result in
+            guard let self else { return }
+            self.isAutoFetchingCookie = false
+
+            switch result {
+            case .success(let token):
+                self.verifyAndCompleteLogin(token: token, silent: silent)
+            case .failure(let error):
+                self.browserLoginPrompt = .needsLogin
+                self.updateStatusBar(state: .notLoggedIn)
+                if error.needsFullDiskAccess {
+                    FDAGuide.showPermissionGuide()
+                } else if !silent {
+                    self.showAuthAlert(title: "读取失败", message: error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    private func verifyAndCompleteLogin(token: String, silent: Bool = false) {
         guard !isVerifyingLogin else { return }
         guard let normalized = TokenParser.parse(token) else {
-            showAuthAlert(
-                title: "登录失败",
-                message: "读取到的凭证格式无效。请在默认浏览器打开 cloud.tal.com 重新登录后再试。"
-            )
+            browserLoginPrompt = .needsLogin
+            if !silent {
+                showAuthAlert(
+                    title: "登录失败",
+                    message: "读取到的凭证格式无效。请在默认浏览器打开 cloud.tal.com 重新登录后再试。"
+                )
+            }
             return
         }
         if TokenParser.isExpired(normalized) {
-            showAuthAlert(
-                title: "登录失败",
-                message: """
-                cloud.tal.com Authorization 已过期。
+            browserLoginPrompt = .needsLogin
+            if !silent {
+                showAuthAlert(
+                    title: "登录失败",
+                    message: """
+                    cloud.tal.com Authorization 已过期。
 
-                请在默认浏览器打开 https://cloud.tal.com 重新登录后再试。
-                """
-            )
+                    请在默认浏览器打开 https://cloud.tal.com 重新登录后再试。
+                    """
+                )
+            }
             return
         }
         isVerifyingLogin = true
@@ -234,10 +312,12 @@ import AppKit
             case .failure(.unauthorized):
                 self.isVerifyingLogin = false
                 TokenStore.delete()
+                self.browserLoginPrompt = .needsLogin
                 self.showUnauthorizedAfterRead()
             case .failure:
                 self.isVerifyingLogin = false
                 TokenStore.delete()
+                self.browserLoginPrompt = .needsLogin
                 self.showAuthAlert(
                     title: "登录失败",
                     message: "无法验证凭证，请检查网络后在浏览器重新登录并重试。"
@@ -255,7 +335,7 @@ import AppKit
 
             请按顺序尝试：
             1. 关闭浏览器后重新打开，访问 https://cloud.tal.com 并重新登录
-            2. 再点击「从浏览器读取凭证」
+            2. 点击「在浏览器中登录」等待自动获取凭证
             """
             if !diagnose.isEmpty {
                 message += "\n\n── 诊断 ──\n\(diagnose)"
@@ -265,13 +345,17 @@ import AppKit
     }
 
     private func finishLoginSuccess() {
+        stopLoginPolling()
+        browserLoginPrompt = .needsLogin
         isLoggedIn = true
         refresh()
     }
 
     private func handleSessionLost() {
+        stopLoginPolling()
         isLoggedIn = false
         displayData = DisplayData()
+        browserLoginPrompt = .needsLogin
         updateStatusBar(state: .notLoggedIn)
     }
 
@@ -281,6 +365,7 @@ import AppKit
 
         TokenStore.delete()
         handleSessionLost()
+        attemptAutoLoginFromBrowser(silent: true)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             self?.isHandlingUnauthorized = false
@@ -325,11 +410,11 @@ import AppKit
         (sender.representedObject as? (() -> Void))?()
     }
 
-    @objc func readBrowserCookiesAction(_ sender: NSMenuItem) {
+    @objc func browserLoginAction(_ sender: NSMenuItem) {
         (sender.representedObject as? (() -> Void))?()
     }
 
-    @objc func browserLoginAction(_ sender: NSMenuItem) {
+    @objc func checkForUpdatesAction(_ sender: NSMenuItem) {
         (sender.representedObject as? (() -> Void))?()
     }
 
