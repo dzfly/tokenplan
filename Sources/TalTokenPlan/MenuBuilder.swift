@@ -34,6 +34,72 @@ enum AppURLs {
     static let detailPage = URL(string: "https://cloud.tal.com/ai/tokenPlan/costStatistics")!
 }
 
+/// 菜单内图标按钮；keepsMenuOpen 为 true 时不关闭下拉菜单
+private final class MenuIconButton: NSButton {
+    var keepsMenuOpen = false
+
+    private static let spinKey = "refreshSpin"
+    private static let rotationDuration: CFTimeInterval = 0.45
+    private var spinStartedAt: Date?
+
+    override func mouseDown(with event: NSEvent) {
+        if keepsMenuOpen {
+            guard let target, let action else { return }
+            NSApp.sendAction(action, to: target, from: self)
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    func startSpinning() {
+        spinStartedAt = Date()
+        wantsLayer = true
+        layoutSubtreeIfNeeded()
+        configureRotationCenter()
+        guard let layer, layer.animation(forKey: Self.spinKey) == nil else { return }
+
+        let animation = CABasicAnimation(keyPath: "transform.rotation.z")
+        animation.fromValue = 0
+        animation.toValue = -2 * Double.pi
+        animation.duration = Self.rotationDuration
+        animation.repeatCount = .infinity
+        animation.isRemovedOnCompletion = false
+        layer.add(animation, forKey: Self.spinKey)
+    }
+
+    override func layout() {
+        super.layout()
+        if wantsLayer, layer?.animation(forKey: Self.spinKey) != nil {
+            configureRotationCenter()
+        }
+    }
+
+    /// 图层旋转锚点设为按钮几何中心
+    private func configureRotationCenter() {
+        guard let layer, let superview else { return }
+        let centerInSuperview = convert(NSPoint(x: bounds.midX, y: bounds.midY), to: superview)
+        layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        layer.position = CGPoint(x: centerInSuperview.x, y: centerInSuperview.y)
+    }
+
+    func stopSpinning(minRotations: Double, completion: @escaping () -> Void) {
+        let start = spinStartedAt ?? Date()
+        let minDuration = minRotations * Self.rotationDuration
+        let delay = max(0, minDuration - Date().timeIntervalSince(start))
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else {
+                completion()
+                return
+            }
+            self.layer?.removeAnimation(forKey: Self.spinKey)
+            self.layer?.transform = CATransform3DIdentity
+            self.spinStartedAt = nil
+            completion()
+        }
+    }
+}
+
 /// 持有按钮闭包，作为 NSButton target
 final class MenuActionHost: NSObject {
     enum Action: Int {
@@ -47,9 +113,29 @@ final class MenuActionHost: NSObject {
     }
 
     private var handlers: [Action: () -> Void] = [:]
+    fileprivate weak var refreshButton: MenuIconButton?
+    private var isRefreshSpinning = false
 
     func set(_ action: Action, handler: @escaping () -> Void) {
         handlers[action] = handler
+    }
+
+    func beginRefreshSpin() {
+        isRefreshSpinning = true
+        refreshButton?.startSpinning()
+    }
+
+    func endRefreshSpin(minRotations: Double, completion: @escaping () -> Void) {
+        guard isRefreshSpinning else {
+            completion()
+            return
+        }
+        isRefreshSpinning = false
+        guard let refreshButton else {
+            completion()
+            return
+        }
+        refreshButton.stopSpinning(minRotations: minRotations, completion: completion)
     }
 
     @objc func dispatch(_ sender: NSButton) {
@@ -93,9 +179,9 @@ enum MenuBuilder {
 
     private enum Style {
         static let usageFontSize: CGFloat = 10
-        static let usageTimeWidth: CGFloat = 76
-        static let usageColumnGap: CGFloat = 3
-        static let usageContentInsetX: CGFloat = 10
+        static let usageColumnGap: CGFloat = 1
+        static let usageContentInsetX: CGFloat = 6
+        static let usageRowSpacing: CGFloat = 2
 
         static func title(_ text: String) -> NSAttributedString {
             attributed(text, font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold), color: MenuText.caption)
@@ -120,7 +206,7 @@ enum MenuBuilder {
 
     // MARK: - Card container
 
-    private static let cardWidth: CGFloat = 280
+    private static let cardWidth: CGFloat = 300
     private static let cardInsetX: CGFloat = 10
     private static let cardInsetY: CGFloat = 2
     private static let contentInsetX: CGFloat = 14
@@ -158,11 +244,12 @@ enum MenuBuilder {
     private static func cardItem(
         rows: [CardRow],
         cardInsetX insetX: CGFloat = cardInsetX,
-        contentInsetX contentX: CGFloat = contentInsetX
+        contentInsetX contentX: CGFloat = contentInsetX,
+        rowSpacing spacing: CGFloat = rowSpacing
     ) -> NSMenuItem {
         let contentWidth = cardWidth - insetX * 2 - contentX * 2
         let contentHeight = rows.reduce(0) { $0 + $1.height }
-            + rowSpacing * CGFloat(max(0, rows.count - 1))
+            + spacing * CGFloat(max(0, rows.count - 1))
         let cardHeight = contentHeight + contentInsetTop + contentInsetBottom
         let wrapperHeight = cardHeight + cardInsetY * 2
 
@@ -187,7 +274,7 @@ enum MenuBuilder {
             row.view.frame = rowFrame
             row.layout?(rowFrame)
             card.addSubview(row.view)
-            y -= rowSpacing
+            y -= spacing
         }
 
         let item = NSMenuItem()
@@ -203,11 +290,18 @@ enum MenuBuilder {
         return item
     }
 
+    private struct HeaderIconButton {
+        var action: MenuActionHost.Action
+        var symbolName: String
+        var accessibilityDesc: String
+        var keepsMenuOpen: Bool = false
+    }
+
     /// 卡片外的标题 + 右侧图标按钮（独立 menu item view）
     private static func headerWithIconButton(
         _ text: String,
         host: MenuActionHost,
-        buttons: [(action: MenuActionHost.Action, symbolName: String, accessibilityDesc: String)],
+        buttons: [HeaderIconButton],
         horizontalInset: CGFloat = 14
     ) -> NSMenuItem {
         let label = NSTextField(labelWithAttributedString: Style.title(text))
@@ -215,7 +309,8 @@ enum MenuBuilder {
 
         var iconButtons: [NSButton] = []
         for button in buttons {
-            let btn = NSButton()
+            let btn = MenuIconButton()
+            btn.keepsMenuOpen = button.keepsMenuOpen
             btn.isBordered = false
             btn.bezelStyle = .inline
             btn.image = NSImage(systemSymbolName: button.symbolName, accessibilityDescription: button.accessibilityDesc)
@@ -225,6 +320,9 @@ enum MenuBuilder {
             btn.target = host
             btn.action = #selector(MenuActionHost.dispatch(_:))
             btn.sizeToFit()
+            if button.action == .refresh {
+                host.refreshButton = btn
+            }
             iconButtons.append(btn)
         }
 
@@ -235,9 +333,10 @@ enum MenuBuilder {
 
         var trailingX = cardWidth - horizontalInset
         for btn in iconButtons.reversed() {
-            let btnW = btn.fittingSize.width
-            trailingX -= btnW
-            btn.frame = NSRect(x: trailingX, y: (height - btnH) / 2, width: btnW, height: btnH)
+            let fit = btn.fittingSize
+            let btnSize = max(max(fit.width, fit.height), 18)
+            trailingX -= btnSize
+            btn.frame = NSRect(x: trailingX, y: (height - btnSize) / 2, width: btnSize, height: btnSize)
             wrapper.addSubview(btn)
             trailingX -= 6
         }
@@ -353,7 +452,7 @@ enum MenuBuilder {
         return CardRow(view: container, height: rowHeight) { frame in
             let costW = ceil(costField.fittingSize.width)
             let tokenW = ceil(tokenField.fittingSize.width)
-            let timeW = min(Style.usageTimeWidth, ceil(timeField.fittingSize.width))
+            let timeW = ceil(timeField.fittingSize.width)
 
             let costX = frame.width - costW
             let tokenX = costX - gap - tokenW
@@ -402,6 +501,62 @@ enum MenuBuilder {
         onLogout: @escaping () -> Void
     ) -> NSMenu {
         let menu = NSMenu()
+        populate(
+            menu,
+            data: data,
+            isLoggedIn: isLoggedIn,
+            onRefresh: onRefresh,
+            onOpenSettings: onOpenSettings,
+            onOpenDetail: onOpenDetail,
+            onOpenBrowserLogin: onOpenBrowserLogin,
+            browserLoginPrompt: browserLoginPrompt,
+            onCheckForUpdates: onCheckForUpdates,
+            onLogout: onLogout
+        )
+        return menu
+    }
+
+    /// 刷新已打开的下拉菜单内容，不关闭菜单
+    static func rebuild(
+        _ menu: NSMenu,
+        data: DisplayData,
+        isLoggedIn: Bool,
+        onRefresh: @escaping () -> Void,
+        onOpenSettings: @escaping () -> Void,
+        onOpenDetail: @escaping () -> Void,
+        onOpenBrowserLogin: @escaping () -> Void,
+        browserLoginPrompt: BrowserLoginPrompt,
+        onCheckForUpdates: @escaping () -> Void,
+        onLogout: @escaping () -> Void
+    ) {
+        populate(
+            menu,
+            data: data,
+            isLoggedIn: isLoggedIn,
+            onRefresh: onRefresh,
+            onOpenSettings: onOpenSettings,
+            onOpenDetail: onOpenDetail,
+            onOpenBrowserLogin: onOpenBrowserLogin,
+            browserLoginPrompt: browserLoginPrompt,
+            onCheckForUpdates: onCheckForUpdates,
+            onLogout: onLogout
+        )
+        menu.update()
+    }
+
+    private static func populate(
+        _ menu: NSMenu,
+        data: DisplayData,
+        isLoggedIn: Bool,
+        onRefresh: @escaping () -> Void,
+        onOpenSettings: @escaping () -> Void,
+        onOpenDetail: @escaping () -> Void,
+        onOpenBrowserLogin: @escaping () -> Void,
+        browserLoginPrompt: BrowserLoginPrompt,
+        onCheckForUpdates: @escaping () -> Void,
+        onLogout: @escaping () -> Void
+    ) {
+        menu.removeAllItems()
         let host = MenuActionHost()
         host.set(.refresh, handler: onRefresh)
         host.set(.settings, handler: onOpenSettings)
@@ -415,7 +570,7 @@ enum MenuBuilder {
         if isLoggedIn {
             // 卡片1：账单总览（标题在卡片外，右侧刷新图标按钮）
             menu.addItem(headerWithIconButton("账单总览", host: host, buttons: [
-                (.refresh, "arrow.clockwise", "刷新"),
+                HeaderIconButton(action: .refresh, symbolName: "arrow.clockwise", accessibilityDesc: "刷新", keepsMenuOpen: true),
             ]))
             var rows: [CardRow] = []
             for line in data.billingLines { rows.append(dataRow(line)) }
@@ -425,13 +580,17 @@ enum MenuBuilder {
             if !data.usageItems.isEmpty {
                 menu.addItem(spacerItem(height: 6))
                 menu.addItem(headerWithIconButton("用量明细", host: host, buttons: [
-                    (.detail, "arrow.up.forward.square", "查看详情"),
+                    HeaderIconButton(action: .detail, symbolName: "arrow.up.forward.square", accessibilityDesc: "查看详情"),
                 ]))
                 var usageRows: [CardRow] = []
                 for item in data.usageItems {
                     usageRows.append(usageRow(time: item.time, name: item.name, tokens: item.tokens, cost: item.cost))
                 }
-                menu.addItem(cardItem(rows: usageRows, contentInsetX: Style.usageContentInsetX))
+                menu.addItem(cardItem(
+                    rows: usageRows,
+                    contentInsetX: Style.usageContentInsetX,
+                    rowSpacing: Style.usageRowSpacing
+                ))
             }
 
             // 操作按钮：设置 + 退出
@@ -464,12 +623,10 @@ enum MenuBuilder {
                 buttonRow(title: "退出", symbolName: "power", action: .quit, host: host),
             ]))
         }
-
-        return menu
     }
 
     private static func spacerItem(height: CGFloat) -> NSMenuItem {
-        let view = NSView(frame: NSRect(x: 0, y: 0, width: 280, height: height))
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: cardWidth, height: height))
         let item = NSMenuItem()
         item.view = view
         item.isEnabled = false
@@ -507,6 +664,11 @@ enum MenuBuilder {
         let formatter = DateFormatter()
         formatter.dateFormat = "M/d HH:mm:ss"
         return formatter.string(from: Date(timeIntervalSince1970: seconds))
+    }
+
+    static func actionHost(for menu: NSMenu?) -> MenuActionHost? {
+        guard let menu else { return nil }
+        return objc_getAssociatedObject(menu, &hostKey) as? MenuActionHost
     }
 }
 

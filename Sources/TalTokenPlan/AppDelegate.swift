@@ -25,8 +25,7 @@ import AppKit
     private static let silentRefreshInterval: TimeInterval = 60
 
     private var isFetching = false
-    /// 从下拉菜单点击刷新后，数据返回时重建菜单
-    private var menuRefreshPending = false
+    private var activeMenu: NSMenu?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -105,7 +104,16 @@ import AppKit
     }
 
     @objc private func statusBarClicked() {
-        let menu = MenuBuilder.build(
+        let menu = makeStatusMenu()
+        activeMenu = menu
+        statusItem.menu = menu
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
+        activeMenu = nil
+    }
+
+    private func makeStatusMenu() -> NSMenu {
+        MenuBuilder.build(
             data: displayData,
             isLoggedIn: isLoggedIn,
             onRefresh: { [weak self] in self?.refreshFromMenu() },
@@ -121,32 +129,57 @@ import AppKit
             onCheckForUpdates: { AppUpdaterManager.shared.checkForUpdates() },
             onLogout: { [weak self] in
                 self?.logout()
-                // 登出后立即重建并重新弹出菜单（此时 isLoggedIn=false）
                 DispatchQueue.main.async {
                     self?.statusItem.menu?.cancelTracking()
                     self?.statusBarClicked()
                 }
             }
         )
-        menu.delegate = self as? NSMenuDelegate
-        statusItem.menu = menu
-        statusItem.button?.performClick(nil)
-        statusItem.menu = nil
     }
 
     private func refreshFromMenu() {
-        menuRefreshPending = true
-        refresh(silent: false)
+        guard TokenStore.load() != nil, !isFetching else { return }
+        MenuBuilder.actionHost(for: activeMenu)?.beginRefreshSpin()
+        refresh(silent: true)
     }
 
-    private func reopenMenuIfNeeded() {
-        guard menuRefreshPending else { return }
-        menuRefreshPending = false
-        guard statusItem.menu != nil else { return }
-        statusItem.menu?.cancelTracking()
-        DispatchQueue.main.async { [weak self] in
-            self?.statusBarClicked()
+    private func refreshActiveMenuIfNeeded() {
+        guard let menu = activeMenu else { return }
+        let finish: () -> Void = { [weak self] in
+            guard let self, self.activeMenu === menu else { return }
+            self.rebuildActiveMenu(menu)
         }
+        if let host = MenuBuilder.actionHost(for: menu) {
+            host.endRefreshSpin(minRotations: 2, completion: finish)
+        } else {
+            finish()
+        }
+    }
+
+    private func rebuildActiveMenu(_ menu: NSMenu) {
+        MenuBuilder.rebuild(
+            menu,
+            data: displayData,
+            isLoggedIn: isLoggedIn,
+            onRefresh: { [weak self] in self?.refreshFromMenu() },
+            onOpenSettings: { [weak self] in
+                self?.statusItem.menu?.cancelTracking()
+                DispatchQueue.main.async {
+                    self?.showSettings()
+                }
+            },
+            onOpenDetail: { [weak self] in self?.openDetailPage() },
+            onOpenBrowserLogin: { [weak self] in self?.startBrowserLoginFlow() },
+            browserLoginPrompt: browserLoginPrompt,
+            onCheckForUpdates: { AppUpdaterManager.shared.checkForUpdates() },
+            onLogout: { [weak self] in
+                self?.logout()
+                DispatchQueue.main.async {
+                    self?.statusItem.menu?.cancelTracking()
+                    self?.statusBarClicked()
+                }
+            }
+        )
     }
 
     private func refresh(silent: Bool = false) {
@@ -187,12 +220,12 @@ import AppKit
             self.isFetching = false
             self.isLoading = false
             if unauthorized {
-                self.menuRefreshPending = false
+                MenuBuilder.actionHost(for: self.activeMenu)?.endRefreshSpin(minRotations: 0) {}
                 self.handleUnauthorized()
                 return
             }
             self.updateDisplay(billing: billing, usage: usage)
-            self.reopenMenuIfNeeded()
+            self.refreshActiveMenuIfNeeded()
         }
     }
 

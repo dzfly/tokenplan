@@ -144,21 +144,15 @@ final class StatusBarProgressView: NSView {
         ))
     }
 
-    /// 圆角矩形环形进度：沿边框描边，背景透明；从顶部中点顺时针填充
+    /// 圆角矩形环形进度：沿边框描边，背景透明；从左侧中点顺时针填充
     private func drawRoundedRectRingProgress(ratio: Double, in rect: NSRect, cornerRadius: CGFloat) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
 
         let inset = ringLineWidth / 2
         let strokeRect = rect.insetBy(dx: inset, dy: inset)
         let radius = max(0, min(cornerRadius - inset, strokeRect.height / 2, strokeRect.width / 2))
-        let path = CGPath(
-            roundedRect: strokeRect,
-            cornerWidth: radius,
-            cornerHeight: radius,
-            transform: nil
-        )
+        let path = clockwiseRoundedRectRingPath(from: strokeRect, radius: radius)
         let perimeter = ringPerimeter(of: strokeRect, radius: radius)
-        let startPhase = ringPhaseToTopCenter(of: strokeRect, radius: radius)
 
         ctx.saveGState()
         ctx.setLineWidth(ringLineWidth)
@@ -171,7 +165,7 @@ final class StatusBarProgressView: NSView {
 
         let clamped = max(0, min(1, ratio))
         if clamped > 0.001 {
-            ctx.setLineDash(phase: startPhase, lengths: [perimeter * clamped, perimeter])
+            ctx.setLineDash(phase: 0, lengths: [perimeter * clamped, perimeter])
             ctx.addPath(path)
             ctx.setStrokeColor(progressRingColor.cgColor)
             ctx.strokePath()
@@ -181,16 +175,31 @@ final class StatusBarProgressView: NSView {
         ctx.restoreGState()
     }
 
-    private func ringPerimeter(of rect: CGRect, radius: CGFloat) -> CGFloat {
-        2 * (rect.width + rect.height - 4 * radius) + 2 * .pi * radius
+    /// 从左中点开始、顺时针的圆角矩形闭合路径
+    private func clockwiseRoundedRectRingPath(from rect: CGRect, radius r: CGFloat) -> CGPath {
+        let path = CGMutablePath()
+        let minX = rect.minX
+        let maxX = rect.maxX
+        let minY = rect.minY
+        let maxY = rect.maxY
+        let midY = rect.midY
+
+        path.move(to: CGPoint(x: minX, y: midY))
+        path.addLine(to: CGPoint(x: minX, y: maxY - r))
+        path.addArc(tangent1End: CGPoint(x: minX, y: maxY), tangent2End: CGPoint(x: minX + r, y: maxY), radius: r)
+        path.addLine(to: CGPoint(x: maxX - r, y: maxY))
+        path.addArc(tangent1End: CGPoint(x: maxX, y: maxY), tangent2End: CGPoint(x: maxX, y: maxY - r), radius: r)
+        path.addLine(to: CGPoint(x: maxX, y: minY + r))
+        path.addArc(tangent1End: CGPoint(x: maxX, y: minY), tangent2End: CGPoint(x: maxX - r, y: minY), radius: r)
+        path.addLine(to: CGPoint(x: minX + r, y: minY))
+        path.addArc(tangent1End: CGPoint(x: minX, y: minY), tangent2End: CGPoint(x: minX, y: minY + r), radius: r)
+        path.addLine(to: CGPoint(x: minX, y: midY))
+        path.closeSubpath()
+        return path
     }
 
-    /// CGPath 圆角矩形起点在左下，换算到顶部中点的相位
-    private func ringPhaseToTopCenter(of rect: CGRect, radius: CGFloat) -> CGFloat {
-        let straightW = rect.width - 2 * radius
-        let straightH = rect.height - 2 * radius
-        let quarterArc = .pi * radius / 2
-        return straightW + quarterArc + straightH + quarterArc + straightW / 2
+    private func ringPerimeter(of rect: CGRect, radius: CGFloat) -> CGFloat {
+        2 * (rect.width + rect.height - 4 * radius) + 2 * .pi * radius
     }
 
     private func capsuleLayoutSize(for billing: BillingSnapshot, settings: RenderSettings, height: CGFloat) -> NSSize {
