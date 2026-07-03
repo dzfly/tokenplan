@@ -7,8 +7,9 @@ macOS 菜单栏应用，从浏览器（Chrome / Edge / Arc / Tabbit / Safari）�
 - 状态栏实时展示用量百分比、剩余/花费金额（可切换），橙色进度环
 - 下拉菜单卡片化展示：账单总览、今日用量 Top5（含模型、token、费用）
 - 一键从浏览器读取登录凭证，无需手动粘贴 token
-- 每分钟自动刷新数据，每日自动检查新版本
-- 设置页：状态栏显示项开关、检查更新
+- 自动刷新数据（间隔可在设置页通过滑块调节，30s–15min，默认 1min）
+- 首次启动自动提示钥匙串授权，后续静默读取
+- 设置页：状态栏显示项开关、刷新间隔、检查更新
 
 ## 技术栈
 
@@ -72,12 +73,16 @@ SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./build.sh
 ### 3. 生成 zip 与签名
 
 ```bash
-ditto -c -k --keepParent "Token Plan.app" releases/TokenPlan.zip
+zip -qr releases/TokenPlan.zip "Token Plan.app"
 cp TokenPlan.dmg releases/TokenPlan.dmg
-.build/x86-build/artifacts/sparkle/Sparkle/bin/sign_update releases/TokenPlan.zip
+
+SIGN_UPDATE=$(find .build -path "*/artifacts/sparkle/Sparkle/bin/sign_update" 2>/dev/null | head -1)
+"${SIGN_UPDATE}" releases/TokenPlan.zip
 ```
 
 `sign_update` 输出 `sparkle:edSignature="..."` 和 `length="..."`，用于 appcast。
+
+> `sign_update` 实际路径：`.build/arm64-build/artifacts/sparkle/Sparkle/bin/sign_update`（或 x86-build），`find` 命令自动定位。
 
 ### 4. 更新 appcast.xml
 
@@ -113,11 +118,13 @@ GitHub 仓库 `dzfly/tokenplan` 只用于更新分发，main 分支仅含 `relea
 
 ```bash
 SHA=$(gh api repos/dzfly/tokenplan/contents/releases/appcast.xml --jq '.sha')
-CONTENT=$(base64 -i releases/appcast.xml)
-gh api -X PUT repos/dzfly/tokenplan/contents/releases/appcast.xml \
-  -f message="release: update appcast for X.Y.Z" \
-  -f content="${CONTENT}" \
-  -f sha="${SHA}"
+CONTENT=$(base64 -i releases/appcast.xml | tr -d '\n')
+gh api repos/dzfly/tokenplan/contents/releases/appcast.xml \
+  --method PUT \
+  --field message="release:X.Y.Z update appcast" \
+  --field "content=${CONTENT}" \
+  --field sha="${SHA}" \
+  --jq '.commit.sha'
 ```
 
 ### 7. 上传 release zip 与 dmg
