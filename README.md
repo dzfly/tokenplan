@@ -73,7 +73,7 @@ SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./build.sh
 ### 3. 生成 zip 与签名
 
 ```bash
-zip -qr releases/TokenPlan.zip "Token Plan.app"
+ditto -c -k --keepParent --sequesterRsrc "Token Plan.app" releases/TokenPlan.zip
 cp TokenPlan.dmg releases/TokenPlan.dmg
 
 SIGN_UPDATE=$(find .build -path "*/artifacts/sparkle/Sparkle/bin/sign_update" 2>/dev/null | head -1)
@@ -82,6 +82,7 @@ SIGN_UPDATE=$(find .build -path "*/artifacts/sparkle/Sparkle/bin/sign_update" 2>
 
 `sign_update` 输出 `sparkle:edSignature="..."` 和 `length="..."`，用于 appcast。
 
+> **必须用 `ditto`，不能用 `zip`**：`zip` 会丢失 macOS 扩展属性和 Sparkle.framework 内的符号链接，导致 Sparkle 解压更新包时报错。
 > `sign_update` 实际路径：`.build/arm64-build/artifacts/sparkle/Sparkle/bin/sign_update`（或 x86-build），`find` 命令自动定位。
 
 ### 4. 更新 appcast.xml
