@@ -12,19 +12,8 @@
             <pubDate>Thu, 03 Jul 2026 08:00:00 +0000</pubDate>
             <enclosure
                 url="https://github.com/dzfly/tokenplan/releases/download/v1.1.0/TokenPlan.zip"
-                sparkle:edSignature="VsvlTq2f92evTumiIPHlS91KI/pWTYemHIHhy+ElDG0bKPmQJtcuYGBy6GJYnULs9BoAtqKht8aqGlSUDDBOAQ=="
-                length="5781222"
-                type="application/octet-stream" />
-        </item>
-        <item>
-            <title>Version 1.0.7</title>
-            <sparkle:version>8</sparkle:version>
-            <sparkle:shortVersionString>1.0.7</sparkle:shortVersionString>
-            <pubDate>Wed, 02 Jul 2026 06:00:00 +0000</pubDate>
-            <enclosure
-                url="https://github.com/dzfly/tokenplan/releases/download/v1.0.7/TokenPlan.zip"
-                sparkle:edSignature="GUUAhXo7+Yg8MlCjDLbiQvr9wn0p8hKN4BUTHTrBnlBqs6P/1U97bJyKxecjHIyShMdvjXa5QdchgPZZPGnrBQ=="
-                length="3751481"
+                sparkle:edSignature="Z+HhEfWfRwScVRr2nOy8/YO+qmtpGkMR/u+LTA8eT/TXwnJPWLWJ6BAvC/swXCMx+NZk+XVy4G16MXJmMwyvCw=="
+                length="3793417"
                 type="application/octet-stream" />
         </item>
         <item>
