@@ -11,6 +11,8 @@ enum AppSettings {
         static let showRemainingCost = "showRemainingCost"
         static let showPercentage = "showPercentage"
         static let showProgressBar = "showProgressBar"
+        static let refreshInterval = "refreshInterval"
+        static let hasShownKeychainNotice = "hasShownKeychainNotice"
     }
 
     static var showRemainingCost: Bool {
@@ -32,6 +34,20 @@ enum AppSettings {
             return defaults.bool(forKey: Key.showProgressBar)
         }
         set { defaults.set(newValue, forKey: Key.showProgressBar); notifyChange() }
+    }
+
+    static var hasShownKeychainNotice: Bool {
+        get { defaults.bool(forKey: Key.hasShownKeychainNotice) }
+        set { defaults.set(newValue, forKey: Key.hasShownKeychainNotice) }
+    }
+
+    // 30s–900s，默认 60s
+    static var refreshInterval: TimeInterval {
+        get {
+            let v = defaults.double(forKey: Key.refreshInterval)
+            return v > 0 ? v : 60
+        }
+        set { defaults.set(newValue, forKey: Key.refreshInterval); notifyChange() }
     }
 
     private static func notifyChange() {

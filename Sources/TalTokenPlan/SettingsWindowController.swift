@@ -120,6 +120,7 @@ private final class FlippedDocumentView: NSView {
     override var isFlipped: Bool { true }
 }
 
+
 final class SettingsWindowController: NSWindowController {
     private var segmentedControl: SegmentedTabView!
     private var contentContainer: NSScrollView!
@@ -131,6 +132,8 @@ final class SettingsWindowController: NSWindowController {
     private var showRemainingSwitch: NSSwitch!
     private var showPercentageSwitch: NSSwitch!
     private var showProgressBarSwitch: NSSwitch!
+    private var refreshIntervalSlider: NSSlider!
+    private var refreshIntervalLabel: NSTextField!
 
     convenience init() {
         let win = NSWindow(
@@ -292,6 +295,8 @@ final class SettingsWindowController: NSWindowController {
             }
         }
 
+        let refreshCard = buildRefreshIntervalCard()
+
         let installHint = NSTextField(wrappingLabelWithString: "登录：在默认浏览器完成 cloud.tal.com 登录后，使用「从浏览器读取凭证」。首次读取时请在钥匙串弹窗中点「始终允许」。")
         installHint.font = .systemFont(ofSize: 11)
         installHint.textColor = .secondaryLabelColor
@@ -312,7 +317,7 @@ final class SettingsWindowController: NSWindowController {
             stack.addArrangedSubview(checkButton)
         }
 
-        let outer = NSStackView(views: [displayCard, hintCard, updateCard])
+        let outer = NSStackView(views: [displayCard, refreshCard, updateCard, hintCard])
         outer.orientation = .vertical
         outer.alignment = .leading
         outer.spacing = 14
@@ -324,10 +329,65 @@ final class SettingsWindowController: NSWindowController {
             outer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             view.bottomAnchor.constraint(equalTo: outer.bottomAnchor),
             displayCard.widthAnchor.constraint(equalTo: outer.widthAnchor),
+            refreshCard.widthAnchor.constraint(equalTo: outer.widthAnchor),
             hintCard.widthAnchor.constraint(equalTo: outer.widthAnchor),
             updateCard.widthAnchor.constraint(equalTo: outer.widthAnchor),
         ])
         return view
+    }
+
+    private func buildRefreshIntervalCard() -> NSView {
+        refreshIntervalLabel = NSTextField(labelWithString: "")
+        refreshIntervalLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+        refreshIntervalLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        refreshIntervalSlider = NSSlider(value: AppSettings.refreshInterval,
+                                         minValue: 30, maxValue: 900,
+                                         target: self, action: #selector(refreshIntervalChanged))
+        refreshIntervalSlider.isContinuous = true
+        refreshIntervalSlider.translatesAutoresizingMaskIntoConstraints = false
+
+        updateRefreshLabel(AppSettings.refreshInterval)
+
+        return cardSection(title: "数据自动刷新时间间隔") { stack in
+            let row = NSView()
+            row.translatesAutoresizingMaskIntoConstraints = false
+            row.addSubview(self.refreshIntervalSlider)
+            row.addSubview(self.refreshIntervalLabel)
+            NSLayoutConstraint.activate([
+                self.refreshIntervalSlider.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+                self.refreshIntervalSlider.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+                self.refreshIntervalSlider.trailingAnchor.constraint(equalTo: self.refreshIntervalLabel.leadingAnchor, constant: -8),
+                self.refreshIntervalLabel.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+                self.refreshIntervalLabel.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+                self.refreshIntervalLabel.widthAnchor.constraint(equalToConstant: 50),
+                row.heightAnchor.constraint(equalToConstant: 24),
+            ])
+            stack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+    }
+
+    @objc private func refreshIntervalChanged() {
+        let v = refreshIntervalSlider.doubleValue
+        // 经过整分钟刻度时触发触觉反馈，给"卡一下"的感觉
+        let prevMinute = Int(AppSettings.refreshInterval) / 60
+        let currMinute = Int(v) / 60
+        if prevMinute != currMinute {
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        }
+        AppSettings.refreshInterval = v
+        updateRefreshLabel(v)
+    }
+
+    private func updateRefreshLabel(_ seconds: Double) {
+        if seconds < 60 {
+            refreshIntervalLabel.stringValue = "\(Int(seconds))s"
+        } else {
+            let m = Int(seconds) / 60
+            let s = Int(seconds) % 60
+            refreshIntervalLabel.stringValue = s == 0 ? "\(m)min" : "\(m)m\(s)s"
+        }
     }
 
     // MARK: - About
@@ -456,6 +516,8 @@ final class SettingsWindowController: NSWindowController {
         showRemainingSwitch.state = AppSettings.showRemainingCost ? .on : .off
         showPercentageSwitch.state = AppSettings.showPercentage ? .on : .off
         showProgressBarSwitch.state = AppSettings.showProgressBar ? .on : .off
+        refreshIntervalSlider.doubleValue = AppSettings.refreshInterval
+        updateRefreshLabel(AppSettings.refreshInterval)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

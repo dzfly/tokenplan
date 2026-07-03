@@ -1,6 +1,6 @@
 import AppKit
 
-@objc final class AppDelegate: NSObject, NSApplicationDelegate {
+@objc final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var statusBarView: StatusBarProgressView!
     private var refreshTimer: Timer?
@@ -22,10 +22,12 @@ import AppKit
 
     private static let loginPollInterval: TimeInterval = 3
     private static let loginTimeout: TimeInterval = 300
-    private static let silentRefreshInterval: TimeInterval = 60
+    private static let refreshTimeout: TimeInterval = 15
 
     private var isFetching = false
     private var activeMenu: NSMenu?
+    private var refreshTimeoutTimer: Timer?
+    private var refreshGeneration = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -45,23 +47,27 @@ import AppKit
         bootstrapLoginState()
         AppUpdaterManager.shared.start()
 
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: Self.silentRefreshInterval, repeats: true) { [weak self] _ in
-            guard self?.isLoggedIn == true else { return }
-            self?.refresh(silent: true)
-        }
+        scheduleRefreshTimer()
     }
 
     private func bootstrapLoginState() {
-        if TokenStore.load() != nil {
-            isLoggedIn = true
-            refresh()
+        guard let token = TokenStore.load() else {
+            isLoggedIn = false
+            browserLoginPrompt = .needsLogin
+            updateStatusBar(state: .notLoggedIn)
+            if AppSettings.hasShownKeychainNotice {
+                attemptAutoLoginFromBrowser(silent: true)
+            } else {
+                showKeychainNotice()
+            }
             return
         }
-
-        isLoggedIn = false
-        browserLoginPrompt = .needsLogin
-        updateStatusBar(state: .notLoggedIn)
-        attemptAutoLoginFromBrowser(silent: true)
+        if TokenParser.isExpired(token) {
+            handleUnauthorized()
+            return
+        }
+        isLoggedIn = true
+        refresh()
     }
 
     private func setupStatusBarView() {
@@ -90,6 +96,15 @@ import AppKit
         } else if isLoading {
             updateStatusBar(state: .loading)
         }
+        scheduleRefreshTimer()
+    }
+
+    private func scheduleRefreshTimer() {
+        refreshTimer?.invalidate()
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: AppSettings.refreshInterval, repeats: true) { [weak self] _ in
+            guard self?.isLoggedIn == true else { return }
+            self?.refresh(silent: true)
+        }
     }
 
     private func resizeStatusBar() {
@@ -105,11 +120,17 @@ import AppKit
 
     @objc private func statusBarClicked() {
         let menu = makeStatusMenu()
+        menu.delegate = self
         activeMenu = menu
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
         statusItem.menu = nil
-        activeMenu = nil
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        if activeMenu === menu {
+            activeMenu = nil
+        }
     }
 
     private func makeStatusMenu() -> NSMenu {
@@ -119,9 +140,7 @@ import AppKit
             onRefresh: { [weak self] in self?.refreshFromMenu() },
             onOpenSettings: { [weak self] in
                 self?.statusItem.menu?.cancelTracking()
-                DispatchQueue.main.async {
-                    self?.showSettings()
-                }
+                DispatchQueue.main.async { self?.showSettings() }
             },
             onOpenDetail: { [weak self] in self?.openDetailPage() },
             onOpenBrowserLogin: { [weak self] in self?.startBrowserLoginFlow() },
@@ -138,7 +157,8 @@ import AppKit
     }
 
     private func refreshFromMenu() {
-        guard TokenStore.load() != nil, !isFetching else { return }
+        guard TokenStore.load() != nil else { return }
+        guard !isFetching else { return }
         MenuBuilder.actionHost(for: activeMenu)?.beginRefreshSpin()
         refresh(silent: true)
     }
@@ -164,9 +184,7 @@ import AppKit
             onRefresh: { [weak self] in self?.refreshFromMenu() },
             onOpenSettings: { [weak self] in
                 self?.statusItem.menu?.cancelTracking()
-                DispatchQueue.main.async {
-                    self?.showSettings()
-                }
+                DispatchQueue.main.async { self?.showSettings() }
             },
             onOpenDetail: { [weak self] in self?.openDetailPage() },
             onOpenBrowserLogin: { [weak self] in self?.startBrowserLoginFlow() },
@@ -183,13 +201,19 @@ import AppKit
     }
 
     private func refresh(silent: Bool = false) {
-        guard TokenStore.load() != nil else {
-            isLoggedIn = false
-            updateStatusBar(state: .notLoggedIn)
+        guard let token = TokenStore.load() else {
+            handleSessionLost()
+            return
+        }
+        if TokenParser.isExpired(token) {
+            handleUnauthorized()
             return
         }
         guard !isFetching else { return }
         isFetching = true
+        refreshGeneration += 1
+        let generation = refreshGeneration
+        startRefreshTimeoutTimer(generation: generation)
         isLoggedIn = true
         if !silent {
             isLoading = true
@@ -199,27 +223,28 @@ import AppKit
         let group = DispatchGroup()
         var billing: BillingData?
         var usage: UsageResponse?
-        var unauthorized = false
+        var billingUnauthorized = false
 
         group.enter()
         APIClient.shared.fetchBilling { result in
             if case .success(let d) = result { billing = d }
-            if case .failure(.unauthorized) = result { unauthorized = true }
+            if case .failure(.unauthorized) = result { billingUnauthorized = true }
             group.leave()
         }
 
         group.enter()
         APIClient.shared.fetchRecentUsage { result in
             if case .success(let d) = result { usage = d }
-            if case .failure(.unauthorized) = result { unauthorized = true }
             group.leave()
         }
 
         group.notify(queue: .main) { [weak self] in
             guard let self = self else { return }
+            guard generation == self.refreshGeneration else { return }
+            self.clearRefreshTimeoutTimer()
             self.isFetching = false
             self.isLoading = false
-            if unauthorized {
+            if billingUnauthorized {
                 MenuBuilder.actionHost(for: self.activeMenu)?.endRefreshSpin(minRotations: 0) {}
                 self.handleUnauthorized()
                 return
@@ -229,22 +254,47 @@ import AppKit
         }
     }
 
+    private func startRefreshTimeoutTimer(generation: Int) {
+        clearRefreshTimeoutTimer()
+        refreshTimeoutTimer = Timer.scheduledTimer(withTimeInterval: Self.refreshTimeout, repeats: false) { [weak self] _ in
+            self?.handleRefreshTimeout(generation: generation)
+        }
+    }
+
+    private func clearRefreshTimeoutTimer() {
+        refreshTimeoutTimer?.invalidate()
+        refreshTimeoutTimer = nil
+    }
+
+    private func handleRefreshTimeout(generation: Int) {
+        guard generation == refreshGeneration, isFetching else { return }
+        isFetching = false
+        isLoading = false
+        clearRefreshTimeoutTimer()
+        MenuBuilder.actionHost(for: activeMenu)?.endRefreshSpin(minRotations: 0) { [weak self] in
+            self?.refreshActiveMenuIfNeeded()
+        }
+    }
+
     private func updateDisplay(billing: BillingData?, usage: UsageResponse?) {
+        if billing == nil && usage == nil { return }
+
         var data = DisplayData()
 
         if let b = billing {
             let cs = b.costSummary
             let ratioPct = (cs.usageRatio ?? (cs.used / cs.limit)) * 100
             let ratioStr = String(format: "%.2f", ratioPct)
+            let tokenUsage = b.tokenUsage ?? TokenUsageDetail.aggregate(from: usage?.list ?? [])
             data.billingLines = [
                 "已用: \(MenuBuilder.formatBillingCost(cs.used)) / \(MenuBuilder.formatBillingCost(cs.limit))  (\(ratioStr)%)",
                 "剩余: \(MenuBuilder.formatBillingCost(cs.remaining))",
-                "Token 总计: \(MenuBuilder.formatTokens(b.tokenUsage.totalTokens))",
-                "输入 Token: \(MenuBuilder.formatTokens(b.tokenUsage.inputTokens))",
-                "输出 Token: \(MenuBuilder.formatTokens(b.tokenUsage.outputTokens))",
+                "Token 总计: \(MenuBuilder.formatTokens(tokenUsage.totalTokens))",
+                "输入 Token: \(MenuBuilder.formatTokens(tokenUsage.inputTokens))",
+                "输出 Token: \(MenuBuilder.formatTokens(tokenUsage.outputTokens))",
             ]
-            let cacheStats = b.tokenUsage.hasCacheData
-                ? b.tokenUsage
+            let cacheStats = tokenUsage.hasCacheData
+                ? tokenUsage
                 : TokenUsageDetail.aggregate(from: usage?.list ?? [])
             if cacheStats.hasCacheData {
                 data.billingLines += [
@@ -255,24 +305,37 @@ import AppKit
             }
             data.billing = BillingSnapshot(ratioPct: ratioPct, remaining: cs.remaining, used: cs.used)
             updateStatusBar(state: .data(data.billing!))
+        } else {
+            data.billingLines = displayData.billingLines
+            data.billing = displayData.billing
         }
 
-        let usageList = usage?.listSortedByRequestTimeDesc ?? []
-        data.usageLines = usageList.map { item in
-            let tok = MenuBuilder.formatTokens(item.tokenUsage?.totalTokens)
-            let cost = item.costs.map { MenuBuilder.formatUsageCost($0) } ?? "-"
-            return "[\(item.channelName ?? "-")] \(item.model ?? "-"): \(tok) | \(cost)"
+        let usageList: [UsageResponse.UsageItem]
+        if let usage {
+            usageList = usage.listSortedByRequestTimeDesc
+        } else {
+            data.usageItems = displayData.usageItems
+            data.usageLines = displayData.usageLines
+            usageList = []
         }
-        data.usageItems = usageList.map { item in
-            let name = item.model ?? "-"
-            let tok = MenuBuilder.formatTokens(item.tokenUsage?.totalTokens)
-            let cost = item.costs.map { MenuBuilder.formatUsageCost($0) } ?? "-"
-            return UsageItem(
-                time: MenuBuilder.formatRequestTime(item.requestTime),
-                name: name,
-                tokens: tok,
-                cost: cost
-            )
+
+        if !usageList.isEmpty || usage != nil {
+            data.usageLines = usageList.map { item in
+                let tok = MenuBuilder.formatTokens(item.tokenUsage?.totalTokens)
+                let cost = item.costs.map { MenuBuilder.formatUsageCost($0) } ?? "-"
+                return "[\(item.channelName ?? "-")] \(item.model ?? "-"): \(tok) | \(cost)"
+            }
+            data.usageItems = usageList.map { item in
+                let name = item.model ?? "-"
+                let tok = MenuBuilder.formatTokens(item.tokenUsage?.totalTokens)
+                let cost = item.costs.map { MenuBuilder.formatUsageCost($0) } ?? "-"
+                return UsageItem(
+                    time: MenuBuilder.formatRequestTime(item.requestTime),
+                    name: name,
+                    tokens: tok,
+                    cost: cost
+                )
+            }
         }
 
         let fmt = DateFormatter()
@@ -370,6 +433,16 @@ import AppKit
         loginRetryTimer = nil
     }
 
+    private func showKeychainNotice() {
+        let alert = NSAlert()
+        alert.messageText = "需要访问钥匙串"
+        alert.informativeText = "应用将从浏览器读取登录凭证，系统会弹出钥匙串授权弹窗，请点击「始终允许」。"
+        alert.addButton(withTitle: "确定")
+        alert.runModal()
+        AppSettings.hasShownKeychainNotice = true
+        attemptAutoLoginFromBrowser(silent: true)
+    }
+
     private func attemptAutoLoginFromBrowser(silent: Bool) {
         guard !isAutoFetchingCookie, !isVerifyingLogin else { return }
         isAutoFetchingCookie = true
@@ -422,11 +495,11 @@ import AppKit
         }
         isVerifyingLogin = true
         TokenStore.save(normalized)
-        verifyBillingWithFallback(token: normalized, bearerFirst: true)
+        verifyBillingForLogin()
     }
 
-    private func verifyBillingWithFallback(token: String, bearerFirst: Bool) {
-        APIClient.shared.fetchBilling(bearerPrefix: bearerFirst) { [weak self] result in
+    private func verifyBillingForLogin() {
+        APIClient.shared.fetchBilling(bearerPrefix: true) { [weak self] result in
             guard let self else { return }
 
             switch result {
@@ -434,12 +507,8 @@ import AppKit
                 self.isVerifyingLogin = false
                 self.loginRetryCount = 0
                 self.finishLoginSuccess()
-            case .failure(.unauthorized) where bearerFirst:
-                TokenStore.save(token)
-                self.verifyBillingWithFallback(token: token, bearerFirst: false)
             case .failure(.unauthorized):
                 self.isVerifyingLogin = false
-                // Cookie 可能刚写入还未稳定，延迟重试读取+验证
                 self.scheduleLoginRetry()
             case .failure:
                 self.isVerifyingLogin = false
@@ -484,6 +553,7 @@ import AppKit
         displayData = DisplayData()
         browserLoginPrompt = .needsLogin
         updateStatusBar(state: .notLoggedIn)
+        refreshActiveMenuIfNeeded()
     }
 
     private func handleUnauthorized() {

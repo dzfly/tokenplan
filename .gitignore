@@ -86,3 +86,4 @@ credentials*
 secrets*
 *.token
 jwt*.txt
+TokenPlan.zip

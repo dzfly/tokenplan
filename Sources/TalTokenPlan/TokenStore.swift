@@ -4,6 +4,16 @@ import Security
 enum TokenStore {
     private static let service = "com.tal.token-plan"
     private static let account = "jwt-token"
+    private static let bearerPrefixKey = "auth-use-bearer-prefix"
+
+    /// API 是否使用 `Bearer ` 前缀；登录验证时会自动探测
+    static var useBearerPrefix: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: bearerPrefixKey) == nil { return true }
+            return UserDefaults.standard.bool(forKey: bearerPrefixKey)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: bearerPrefixKey) }
+    }
 
     static func save(_ token: String) {
         let data = Data(token.utf8)
@@ -38,5 +48,6 @@ enum TokenStore {
             kSecAttrAccount as String: account
         ]
         SecItemDelete(query as CFDictionary)
+        UserDefaults.standard.removeObject(forKey: bearerPrefixKey)
     }
 }

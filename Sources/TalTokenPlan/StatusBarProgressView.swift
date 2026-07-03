@@ -37,6 +37,9 @@ final class StatusBarProgressView: NSView {
 
     override var isOpaque: Bool { false }
 
+    /// 点击穿透到 NSStatusBarButton，避免挡住菜单弹出
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
     override var intrinsicContentSize: NSSize {
         let height = fixedBarHeight
         switch state {

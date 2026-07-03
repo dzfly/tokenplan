@@ -74,7 +74,6 @@ private final class MenuIconButton: NSButton {
         }
     }
 
-    /// 图层旋转锚点设为按钮几何中心
     private func configureRotationCenter() {
         guard let layer, let superview else { return }
         let centerInSuperview = convert(NSPoint(x: bounds.midX, y: bounds.midY), to: superview)
@@ -140,6 +139,9 @@ final class MenuActionHost: NSObject {
 
     @objc func dispatch(_ sender: NSButton) {
         guard let action = Action(rawValue: sender.tag) else { return }
+        if action == .refresh, let btn = sender as? MenuIconButton {
+            refreshButton = btn
+        }
         handlers[action]?()
     }
 }
@@ -170,6 +172,12 @@ enum MenuBuilder {
                 : NSColor(white: 0.22, alpha: 1.0)
         }
 
+        static let hint = NSColor(name: "TokenPlanMenuHint") { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(white: 1.0, alpha: 0.52)
+                : NSColor(white: 0.0, alpha: 0.42)
+        }
+
         static let accent = NSColor(name: "TokenPlanMenuAccent") { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
                 ? NSColor(calibratedRed: 1.0, green: 0.62, blue: 0.16, alpha: 1.0)
@@ -197,6 +205,10 @@ enum MenuBuilder {
 
         static func action(_ text: String) -> NSAttributedString {
             attributed(text, font: .systemFont(ofSize: NSFont.systemFontSize, weight: .medium), color: MenuText.primary)
+        }
+
+        static func hint(_ text: String) -> NSAttributedString {
+            attributed(text, font: .systemFont(ofSize: NSFont.systemFontSize, weight: .regular), color: MenuText.hint)
         }
 
         private static func attributed(_ text: String, font: NSFont, color: NSColor) -> NSAttributedString {
@@ -359,16 +371,18 @@ enum MenuBuilder {
     private static let actionIconWidth: CGFloat = 16
     private static let actionIconSpacing: CGFloat = 6
 
-    private static func actionButtonTitle(title: String, symbolName: String?) -> NSAttributedString {
+    private static func actionButtonTitle(title: String, symbolName: String?, hintStyle: Bool = false) -> NSAttributedString {
+        let textColor = hintStyle ? MenuText.hint : MenuText.primary
+        let fontWeight: NSFont.Weight = hintStyle ? .regular : .medium
         let textAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .medium),
-            .foregroundColor: MenuText.primary,
+            .font: NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: fontWeight),
+            .foregroundColor: textColor,
         ]
         guard let symbolName,
               let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: title)?
                 .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .medium))
         else {
-            return Style.action(title)
+            return hintStyle ? Style.hint(title) : Style.action(title)
         }
 
         let attachment = NSTextAttachment()
@@ -386,7 +400,8 @@ enum MenuBuilder {
         symbolName: String? = nil,
         action: MenuActionHost.Action,
         host: MenuActionHost,
-        enabled: Bool = true
+        enabled: Bool = true,
+        hintStyle: Bool = false
     ) -> CardRow {
         let btn = NSButton()
         btn.isBordered = false
@@ -394,7 +409,8 @@ enum MenuBuilder {
         btn.layer?.cornerRadius = 8
         btn.layer?.cornerCurve = .continuous
         btn.bezelStyle = .inline
-        btn.attributedTitle = actionButtonTitle(title: title, symbolName: symbolName)
+        btn.attributedTitle = actionButtonTitle(title: title, symbolName: symbolName, hintStyle: hintStyle)
+        btn.contentTintColor = hintStyle ? MenuText.hint : nil
         btn.alignment = .left
         btn.imagePosition = .noImage
         btn.tag = action.rawValue
@@ -557,6 +573,7 @@ enum MenuBuilder {
         onLogout: @escaping () -> Void
     ) {
         menu.removeAllItems()
+        menu.autoenablesItems = false
         let host = MenuActionHost()
         host.set(.refresh, handler: onRefresh)
         host.set(.settings, handler: onOpenSettings)
@@ -573,7 +590,12 @@ enum MenuBuilder {
                 HeaderIconButton(action: .refresh, symbolName: "arrow.clockwise", accessibilityDesc: "刷新", keepsMenuOpen: true),
             ]))
             var rows: [CardRow] = []
-            for line in data.billingLines { rows.append(dataRow(line)) }
+            if data.billingLines.isEmpty {
+                rows.append(buttonRow(title: "暂无数据，点击刷新", symbolName: "arrow.clockwise",
+                                      action: .refresh, host: host, hintStyle: true))
+            } else {
+                for line in data.billingLines { rows.append(dataRow(line)) }
+            }
             menu.addItem(cardItem(rows: rows))
 
             // 卡片2：用量明细（标题+详情图标在卡片外，卡片内只放用量行）
@@ -603,7 +625,7 @@ enum MenuBuilder {
 
             if !data.lastUpdated.isEmpty {
                 let cap = NSMenuItem()
-                cap.attributedTitle = Style.caption("上次更新: \(data.lastUpdated)")
+                cap.attributedTitle = Style.hint("上次更新: \(data.lastUpdated)")
                 cap.isEnabled = false
                 menu.addItem(cap)
             }

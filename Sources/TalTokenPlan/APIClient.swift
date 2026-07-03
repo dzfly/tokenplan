@@ -9,19 +9,44 @@ enum APIError: Error {
 
 final class APIClient {
     static let shared = APIClient()
+    static let requestTimeout: TimeInterval = 15
     private let base = URL(string: "https://apx-console-api.tal.com")!
     private let appId = "300002213"
-    var onUnauthorized: (() -> Void)?
-
-    private struct AuthFailurePayload: Decodable {
-        let code: Int?
-        let msg: String?
-    }
 
     private func request<T: Decodable>(
         _ path: String,
         queryItems: [URLQueryItem] = [],
-        bearerPrefix: Bool = true,
+        bearerPrefix: Bool? = nil,
+        completion: @escaping (Result<T, APIError>) -> Void
+    ) {
+        let preferredBearer = bearerPrefix ?? TokenStore.useBearerPrefix
+        performRequest(path, queryItems: queryItems, bearerPrefix: preferredBearer) { (result: Result<T, APIError>) in
+            switch result {
+            case .failure(.unauthorized) where preferredBearer:
+                self.performRequest(path, queryItems: queryItems, bearerPrefix: false) { (retry: Result<T, APIError>) in
+                    switch retry {
+                    case .success:
+                        TokenStore.useBearerPrefix = false
+                        completion(retry)
+                    case .failure(.unauthorized):
+                        completion(.failure(.unauthorized))
+                    case .failure(let error):
+                        completion(.failure(error))
+                    }
+                }
+            case .success:
+                TokenStore.useBearerPrefix = preferredBearer
+                completion(result)
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        }
+    }
+
+    private func performRequest<T: Decodable>(
+        _ path: String,
+        queryItems: [URLQueryItem] = [],
+        bearerPrefix: Bool,
         completion: @escaping (Result<T, APIError>) -> Void
     ) {
         guard let token = TokenStore.load() else {
@@ -40,15 +65,14 @@ final class APIClient {
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             forHTTPHeaderField: "User-Agent"
         )
+        req.timeoutInterval = Self.requestTimeout
 
         URLSession.shared.dataTask(with: req) { data, response, error in
             if let error = error {
                 completion(.failure(.networkError(error)))
                 return
             }
-            if let http = response as? HTTPURLResponse, http.statusCode == 401 {
-                TokenStore.delete()
-                DispatchQueue.main.async { self.onUnauthorized?() }
+            if let http = response as? HTTPURLResponse, http.statusCode == 401 || http.statusCode == 403 {
                 completion(.failure(.unauthorized))
                 return
             }
@@ -56,16 +80,12 @@ final class APIClient {
                 completion(.failure(.unknown))
                 return
             }
-            if self.isAuthFailurePayload(data) {
-                TokenStore.delete()
-                DispatchQueue.main.async { self.onUnauthorized?() }
-                completion(.failure(.unauthorized))
-                return
-            }
             do {
                 let wrapper = try JSONDecoder().decode(APIResponse<T>.self, from: data)
                 if let d = wrapper.data {
                     completion(.success(d))
+                } else if self.isAuthFailure(code: wrapper.code, msg: wrapper.msg) {
+                    completion(.failure(.unauthorized))
                 } else {
                     completion(.failure(.unknown))
                 }
@@ -80,16 +100,23 @@ final class APIClient {
         }.resume()
     }
 
-    private func isAuthFailurePayload(_ data: Data) -> Bool {
-        guard let payload = try? JSONDecoder().decode(AuthFailurePayload.self, from: data) else {
-            return false
-        }
-        if payload.code == 401 || payload.code == 403 { return true }
-        let msg = payload.msg?.lowercased() ?? ""
-        return msg.contains("未登录") || msg.contains("登录") || msg.contains("token") || msg.contains("auth")
+    private func isAuthFailure(code: Int?, msg: String?) -> Bool {
+        if code == 401 || code == 403 { return true }
+        if let code, code == 0 || code == 200 { return false }
+        let text = msg?.lowercased() ?? ""
+        return text.contains("未登录")
+            || text.contains("请先登录")
+            || text.contains("not logged in")
+            || text.contains("unauthorized")
+            || text.contains("token expired")
+            || text.contains("jwt expired")
+            || text.contains("token无效")
+            || text.contains("token 无效")
+            || text.contains("登录已过期")
+            || text.contains("登录过期")
     }
 
-    func fetchBilling(bearerPrefix: Bool = true, completion: @escaping (Result<BillingData, APIError>) -> Void) {
+    func fetchBilling(bearerPrefix: Bool? = nil, completion: @escaping (Result<BillingData, APIError>) -> Void) {
         request("codingPlan/billing", bearerPrefix: bearerPrefix, completion: completion)
     }
 
@@ -163,13 +190,43 @@ final class APIClient {
 // data.costSummary + data.tokenUsage
 struct BillingData: Decodable {
     let costSummary: CostSummary
-    let tokenUsage: TokenUsageDetail
+    let tokenUsage: TokenUsageDetail?
 
     struct CostSummary: Decodable {
         let used: Double
         let limit: Double
         let remaining: Double
         let usageRatio: Double?
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            used = try Self.decodeDouble(c, forKey: .used)
+            limit = try Self.decodeDouble(c, forKey: .limit)
+            remaining = try Self.decodeDouble(c, forKey: .remaining)
+            usageRatio = try Self.decodeOptionalDouble(c, forKey: .usageRatio)
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case used, limit, remaining, usageRatio
+        }
+
+        private static func decodeDouble(
+            _ c: KeyedDecodingContainer<CodingKeys>,
+            forKey key: CodingKeys
+        ) throws -> Double {
+            if let v = try? c.decode(Double.self, forKey: key) { return v }
+            if let v = try? c.decode(Int.self, forKey: key) { return Double(v) }
+            if let text = try? c.decode(String.self, forKey: key), let v = Double(text) { return v }
+            throw DecodingError.dataCorruptedError(forKey: key, in: c, debugDescription: "expected number")
+        }
+
+        private static func decodeOptionalDouble(
+            _ c: KeyedDecodingContainer<CodingKeys>,
+            forKey key: CodingKeys
+        ) throws -> Double? {
+            if (try? c.decodeNil(forKey: key)) == true { return nil }
+            return try decodeDouble(c, forKey: key)
+        }
     }
 }
 
