@@ -313,9 +313,19 @@ import AppKit
         let usageList: [UsageResponse.UsageItem]
         if let usage {
             usageList = usage.listSortedByRequestTimeDesc
+            if usageList.isEmpty {
+                data.todayTokens = displayData.todayTokens
+                data.todayCost = displayData.todayCost
+            } else {
+                let agg = TokenUsageDetail.aggregate(from: usageList)
+                data.todayTokens = MenuBuilder.formatTokens(agg.totalTokens)
+                data.todayCost = MenuBuilder.formatUsageCost(usageList.compactMap { $0.costs }.reduce(0, +))
+            }
         } else {
             data.usageItems = displayData.usageItems
             data.usageLines = displayData.usageLines
+            data.todayTokens = displayData.todayTokens
+            data.todayCost = displayData.todayCost
             usageList = []
         }
 

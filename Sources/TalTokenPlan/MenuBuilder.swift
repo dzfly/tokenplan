@@ -14,6 +14,8 @@ struct DisplayData {
     var usageItems: [UsageItem] = []
     var lastUpdated: String = ""
     var billing: BillingSnapshot?
+    var todayTokens: String = ""
+    var todayCost: String = ""
 }
 
 enum BrowserLoginPrompt {
@@ -598,6 +600,16 @@ enum MenuBuilder {
             }
             menu.addItem(cardItem(rows: rows))
 
+            // 卡片：今日用量（置于用量明细上方）
+            if !data.todayTokens.isEmpty {
+                menu.addItem(spacerItem(height: 6))
+                menu.addItem(headerWithIconButton("今日用量", host: host, buttons: []))
+                menu.addItem(cardItem(rows: [
+                    dataRow("Token: \(data.todayTokens)"),
+                    dataRow("金额: \(data.todayCost)"),
+                ]))
+            }
+
             // 卡片2：用量明细（标题+详情图标在卡片外，卡片内只放用量行）
             if !data.usageItems.isEmpty {
                 menu.addItem(spacerItem(height: 6))
@@ -658,8 +670,8 @@ enum MenuBuilder {
     // AppDelegate 旧 selector 路由保留兼容（不再由菜单调用，但保留方法签名）
     static func formatTokens(_ n: Int64?) -> String {
         guard let n = n else { return "-" }
-        if n >= 1_000_000 { return String(format: "%.2fM", Double(n) / 1_000_000) }
-        if n >= 1_000    { return String(format: "%.1fK", Double(n) / 1_000) }
+        if n >= 100_000_000 { return String(format: "%.2f亿", Double(n) / 100_000_000) }
+        if n >= 10_000 { return String(format: "%.2f万", Double(n) / 10_000) }
         return "\(n)"
     }
 
