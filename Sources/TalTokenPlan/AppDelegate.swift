@@ -314,8 +314,8 @@ import AppKit
         if let usage {
             usageList = usage.listSortedByRequestTimeDesc
             if usageList.isEmpty {
-                data.todayTokens = displayData.todayTokens
-                data.todayCost = displayData.todayCost
+                data.todayTokens = MenuBuilder.formatTokens(0)
+                data.todayCost = MenuBuilder.formatUsageCost(0)
             } else {
                 let agg = TokenUsageDetail.aggregate(from: usageList)
                 data.todayTokens = MenuBuilder.formatTokens(agg.totalTokens)
@@ -330,12 +330,13 @@ import AppKit
         }
 
         if !usageList.isEmpty || usage != nil {
-            data.usageLines = usageList.map { item in
+            let displayList = Array(usageList.prefix(10))
+            data.usageLines = displayList.map { item in
                 let tok = MenuBuilder.formatTokens(item.tokenUsage?.totalTokens)
                 let cost = item.costs.map { MenuBuilder.formatUsageCost($0) } ?? "-"
                 return "[\(item.channelName ?? "-")] \(item.model ?? "-"): \(tok) | \(cost)"
             }
-            data.usageItems = usageList.map { item in
+            data.usageItems = displayList.map { item in
                 let name = item.model ?? "-"
                 let tok = MenuBuilder.formatTokens(item.tokenUsage?.totalTokens)
                 let cost = item.costs.map { MenuBuilder.formatUsageCost($0) } ?? "-"

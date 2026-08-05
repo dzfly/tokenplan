@@ -125,8 +125,8 @@ final class APIClient {
     }
 
     func fetchRecentUsage(
-        pageSize: Int = 10,
-        maxLookbackDays: Int = 30,
+        pageSize: Int = 500,
+        maxLookbackDays: Int = 2,
         completion: @escaping (Result<UsageResponse, APIError>) -> Void
     ) {
         fetchUsage(dayOffset: 0, pageSize: pageSize, maxLookbackDays: maxLookbackDays, completion: completion)
@@ -154,12 +154,7 @@ final class APIClient {
 
         let startMs = String(Int64(start.timeIntervalSince1970 * 1000))
         let endMs = String(Int64(end.timeIntervalSince1970 * 1000))
-        request("codingPlan/usage", queryItems: [
-            URLQueryItem(name: "startTime", value: startMs),
-            URLQueryItem(name: "endTime", value: endMs),
-            URLQueryItem(name: "page", value: "1"),
-            URLQueryItem(name: "pageSize", value: String(pageSize)),
-        ], completion: { (result: Result<UsageResponse, APIError>) in
+        fetchDayAllPages(startMs: startMs, endMs: endMs, pageSize: pageSize) { result in
             switch result {
             case .success(let response):
                 if Self.hasUsageData(response) {
@@ -179,7 +174,44 @@ final class APIClient {
             case .failure(let error):
                 completion(.failure(error))
             }
-        })
+        }
+    }
+
+    private func fetchDayAllPages(
+        startMs: String,
+        endMs: String,
+        pageSize: Int,
+        completion: @escaping (Result<UsageResponse, APIError>) -> Void
+    ) {
+        var allItems: [UsageResponse.UsageItem] = []
+        var total = 0
+        var page = 1
+        func fetchPage() {
+            request("codingPlan/usage", queryItems: [
+                URLQueryItem(name: "startTime", value: startMs),
+                URLQueryItem(name: "endTime", value: endMs),
+                URLQueryItem(name: "page", value: String(page)),
+                URLQueryItem(name: "pageSize", value: String(pageSize)),
+            ], completion: { (result: Result<UsageResponse, APIError>) in
+                switch result {
+                case .success(let response):
+                    let pageList = response.list ?? []
+                    allItems.append(contentsOf: pageList)
+                    if total == 0 { total = response.total ?? pageList.count }
+                    if !pageList.isEmpty && allItems.count < total {
+                        page += 1
+                        fetchPage()
+                    } else {
+                        completion(.success(UsageResponse(total: total, list: allItems)))
+                    }
+                case .failure(.unauthorized):
+                    completion(.failure(.unauthorized))
+                case .failure(let error):
+                    completion(.failure(error))
+                }
+            })
+        }
+        fetchPage()
     }
 
     private static func hasUsageData(_ response: UsageResponse) -> Bool {
