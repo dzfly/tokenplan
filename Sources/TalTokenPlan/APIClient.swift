@@ -226,20 +226,34 @@ struct BillingData: Decodable {
 
     struct CostSummary: Decodable {
         let used: Double
+        let reserved: Double?
         let limit: Double
         let remaining: Double
         let usageRatio: Double?
+        let maxModelUsed: Double?
+        let maxModelLimit: Double?
+        let maxModelRemaining: Double?
+        let maxModelUsageRatio: Double?
+        let maxModelPercentage: Double?
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             used = try Self.decodeDouble(c, forKey: .used)
+            reserved = try Self.decodeOptionalDouble(c, forKey: .reserved)
             limit = try Self.decodeDouble(c, forKey: .limit)
             remaining = try Self.decodeDouble(c, forKey: .remaining)
             usageRatio = try Self.decodeOptionalDouble(c, forKey: .usageRatio)
+            maxModelUsed = try Self.decodeOptionalDouble(c, forKey: .maxModelUsed)
+            maxModelLimit = try Self.decodeOptionalDouble(c, forKey: .maxModelLimit)
+            maxModelRemaining = try Self.decodeOptionalDouble(c, forKey: .maxModelRemaining)
+            maxModelUsageRatio = try Self.decodeOptionalDouble(c, forKey: .maxModelUsageRatio)
+            maxModelPercentage = try Self.decodeOptionalDouble(c, forKey: .maxModelPercentage)
         }
 
         private enum CodingKeys: String, CodingKey {
-            case used, limit, remaining, usageRatio
+            case used, reserved, limit, remaining, usageRatio
+            case maxModelUsed, maxModelLimit, maxModelRemaining
+            case maxModelUsageRatio, maxModelPercentage
         }
 
         private static func decodeDouble(
@@ -256,6 +270,7 @@ struct BillingData: Decodable {
             _ c: KeyedDecodingContainer<CodingKeys>,
             forKey key: CodingKeys
         ) throws -> Double? {
+            guard c.contains(key) else { return nil }
             if (try? c.decodeNil(forKey: key)) == true { return nil }
             return try decodeDouble(c, forKey: key)
         }

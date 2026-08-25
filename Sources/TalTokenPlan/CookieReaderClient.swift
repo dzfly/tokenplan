@@ -3,6 +3,7 @@ import Foundation
 enum CookieReaderError: LocalizedError {
     case helperMissing
     case helperFailed(code: Int32, message: String)
+    case helperTimedOut
     case invalidOutput
 
     var errorDescription: String? {
@@ -11,6 +12,8 @@ enum CookieReaderError: LocalizedError {
             return "未找到 Cookie 读取工具，请重新安装 Token Plan"
         case .helperFailed(_, let message):
             return message
+        case .helperTimedOut:
+            return "读取浏览器凭证超时，请确认浏览器已打开后重试"
         case .invalidOutput:
             return "Cookie 读取工具返回了无效凭证"
         }
@@ -23,6 +26,8 @@ enum CookieReaderError: LocalizedError {
 }
 
 enum CookieReaderClient {
+    private static let helperTimeout: TimeInterval = 12
+
     static func bundledHelperURL() -> URL? {
         let url = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/CookieReaderHelper")
         return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
@@ -61,44 +66,68 @@ enum CookieReaderClient {
             process.standardOutput = stdout
             process.standardError = stderr
 
-            do {
-                try process.run()
-            } catch {
-                DispatchQueue.main.async {
-                    completion(.failure(.helperFailed(code: -1, message: "无法启动 Cookie 读取工具：\(error.localizedDescription)")))
+            let completionLock = NSLock()
+            var didComplete = false
+            func finish(_ result: Result<String, CookieReaderError>) {
+                completionLock.lock()
+                guard !didComplete else {
+                    completionLock.unlock()
+                    return
                 }
-                return
+                didComplete = true
+                completionLock.unlock()
+                DispatchQueue.main.async {
+                    completion(result)
+                }
             }
 
-            process.waitUntilExit()
-            let outData = stdout.fileHandleForReading.readDataToEndOfFile()
-            let errData = stderr.fileHandleForReading.readDataToEndOfFile()
-            let errText = String(data: errData, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            process.terminationHandler = { process in
+                let outData = stdout.fileHandleForReading.readDataToEndOfFile()
+                let errData = stderr.fileHandleForReading.readDataToEndOfFile()
+                let errText = String(data: errData, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-            DispatchQueue.main.async {
                 if arguments.contains("--diagnose") {
                     let message = errText.isEmpty ? "诊断无输出" : errText
                     if process.terminationStatus == 0 {
-                        completion(.success(message))
+                        finish(.success(message))
                     } else {
-                        completion(.failure(.helperFailed(code: process.terminationStatus, message: message)))
+                        finish(.failure(.helperFailed(code: process.terminationStatus, message: message)))
                     }
                     return
                 }
 
                 guard process.terminationStatus == 0 else {
-                    let message = errText.isEmpty ? "Cookie 读取失败 (code \(process.terminationStatus))" : errText
-                    completion(.failure(.helperFailed(code: process.terminationStatus, message: message)))
+                    let message = errText.isEmpty
+                        ? "Cookie 读取失败 (code \(process.terminationStatus))"
+                        : errText
+                    finish(.failure(.helperFailed(code: process.terminationStatus, message: message)))
                     return
                 }
 
                 guard let raw = String(data: outData, encoding: .utf8),
                       let token = TokenParser.parse(raw) else {
-                    completion(.failure(.invalidOutput))
+                    finish(.failure(.invalidOutput))
                     return
                 }
-                completion(.success(token))
+                finish(.success(token))
+            }
+
+            do {
+                try process.run()
+            } catch {
+                finish(.failure(.helperFailed(code: -1, message: "无法启动 Cookie 读取工具：\(error.localizedDescription)")))
+                return
+            }
+
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + Self.helperTimeout) {
+                completionLock.lock()
+                let shouldTerminate = !didComplete && process.isRunning
+                completionLock.unlock()
+                guard shouldTerminate else { return }
+
+                process.terminate()
+                finish(.failure(.helperTimedOut))
             }
         }
     }

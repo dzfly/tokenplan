@@ -14,6 +14,7 @@ import AppKit
     private var loginPollTimer: Timer?
     private var loginTimeoutTimer: Timer?
     private var isAutoFetchingCookie = false
+    private var isReadingBrowserToken = false
     /// Cookie 写入有延迟，验证失败时延迟重试的次数与定时器
     private var loginRetryCount = 0
     private static let maxLoginRetry = 3
@@ -56,7 +57,7 @@ import AppKit
             browserLoginPrompt = .needsLogin
             updateStatusBar(state: .notLoggedIn)
             if AppSettings.hasShownKeychainNotice {
-                attemptAutoLoginFromBrowser(silent: true)
+                startLoginPolling()
             } else {
                 showKeychainNotice()
             }
@@ -160,7 +161,9 @@ import AppKit
         guard TokenStore.load() != nil else { return }
         guard !isFetching else { return }
         MenuBuilder.actionHost(for: activeMenu)?.beginRefreshSpin()
-        refresh(silent: true)
+        syncBrowserToken { [weak self] in
+            self?.refresh(silent: true)
+        }
     }
 
     private func refreshActiveMenuIfNeeded() {
@@ -289,6 +292,20 @@ import AppKit
             data.billingLines = [
                 "已用: \(MenuBuilder.formatBillingCost(cs.used)) / \(MenuBuilder.formatBillingCost(cs.limit))  (\(ratioStr)%)",
                 "剩余: \(MenuBuilder.formatBillingCost(cs.remaining))",
+            ]
+            if let maxUsed = cs.maxModelUsed, let maxLimit = cs.maxModelLimit {
+                let maxRatio = cs.maxModelUsageRatio ?? (maxLimit > 0 ? maxUsed / maxLimit : 0)
+                let maxRatioStr = String(format: "%.2f", maxRatio * 100)
+                data.billingLines.append(
+                    "Max 已用: \(MenuBuilder.formatBillingCost(maxUsed)) / \(MenuBuilder.formatBillingCost(maxLimit))  (\(maxRatioStr)%)"
+                )
+                if let maxRemaining = cs.maxModelRemaining {
+                    data.billingLines.append(
+                        "Max 剩余: \(MenuBuilder.formatBillingCost(maxRemaining))"
+                    )
+                }
+            }
+            data.billingLines += [
                 "Token 总计: \(MenuBuilder.formatTokens(tokenUsage.totalTokens))",
                 "输入 Token: \(MenuBuilder.formatTokens(tokenUsage.inputTokens))",
                 "输出 Token: \(MenuBuilder.formatTokens(tokenUsage.outputTokens))",
@@ -382,8 +399,9 @@ import AppKit
             stopLoginPolling()
             return
         }
+        guard !isReadingBrowserToken else { return }
 
-        CookieReaderClient.fetchToken { [weak self] result in
+        _ = readBrowserToken { [weak self] result in
             guard let self else { return }
             switch result {
             case .success(let token):
@@ -399,6 +417,42 @@ import AppKit
                     self.showAuthAlert(title: "读取失败", message: error.localizedDescription)
                 }
             }
+        }
+    }
+
+    @discardableResult
+    private func readBrowserToken(
+        completion: @escaping (Result<String, CookieReaderError>) -> Void
+    ) -> Bool {
+        guard !isReadingBrowserToken else { return false }
+        isReadingBrowserToken = true
+        CookieReaderClient.fetchToken { [weak self] result in
+            self?.isReadingBrowserToken = false
+            completion(result)
+        }
+        return true
+    }
+
+    private func syncBrowserToken(completion: @escaping () -> Void) {
+        guard isLoggedIn, !isVerifyingLogin else {
+            completion()
+            return
+        }
+        guard readBrowserToken(completion: { [weak self] result in
+            guard self != nil else {
+                completion()
+                return
+            }
+            if case .success(let token) = result,
+               let normalized = TokenParser.parse(token),
+               !TokenParser.isExpired(normalized),
+               normalized != TokenStore.load() {
+                TokenStore.save(normalized)
+            }
+            completion()
+        }) else {
+            completion()
+            return
         }
     }
 
@@ -423,7 +477,7 @@ import AppKit
         loginRetryTimer = Timer.scheduledTimer(withTimeInterval: Self.loginRetryInterval, repeats: false) { [weak self] _ in
             guard let self else { return }
             // 重新读最新 Cookie + 验证
-            CookieReaderClient.fetchToken { [weak self] result in
+            guard self.readBrowserToken(completion: { [weak self] result in
                 guard let self else { return }
                 switch result {
                 case .success(let token):
@@ -431,6 +485,9 @@ import AppKit
                 case .failure:
                     self.scheduleLoginRetry()
                 }
+            }) else {
+                self.scheduleLoginRetry()
+                return
             }
         }
     }
@@ -451,15 +508,15 @@ import AppKit
         alert.addButton(withTitle: "确定")
         alert.runModal()
         AppSettings.hasShownKeychainNotice = true
-        attemptAutoLoginFromBrowser(silent: true)
+        startLoginPolling()
     }
 
     private func attemptAutoLoginFromBrowser(silent: Bool) {
-        guard !isAutoFetchingCookie, !isVerifyingLogin else { return }
+        guard !isAutoFetchingCookie, !isVerifyingLogin, !isReadingBrowserToken else { return }
         isAutoFetchingCookie = true
         updateStatusBar(state: .loading)
 
-        CookieReaderClient.fetchToken { [weak self] result in
+        _ = readBrowserToken { [weak self] result in
             guard let self else { return }
             self.isAutoFetchingCookie = false
 
@@ -474,6 +531,9 @@ import AppKit
                 } else if !silent {
                     self.showAuthAlert(title: "读取失败", message: error.localizedDescription)
                 }
+                if silent {
+                    self.startLoginPolling()
+                }
             }
         }
     }
@@ -487,6 +547,8 @@ import AppKit
                     title: "登录失败",
                     message: "读取到的凭证格式无效。请在默认浏览器打开 cloud.tal.com 重新登录后再试。"
                 )
+            } else {
+                startLoginPolling()
             }
             return
         }
@@ -501,15 +563,17 @@ import AppKit
                     请在默认浏览器打开 https://cloud.tal.com 重新登录后再试。
                     """
                 )
+            } else {
+                startLoginPolling()
             }
             return
         }
         isVerifyingLogin = true
         TokenStore.save(normalized)
-        verifyBillingForLogin()
+        verifyBillingForLogin(silent: silent)
     }
 
-    private func verifyBillingForLogin() {
+    private func verifyBillingForLogin(silent: Bool) {
         APIClient.shared.fetchBilling(bearerPrefix: true) { [weak self] result in
             guard let self else { return }
 
@@ -525,10 +589,14 @@ import AppKit
                 self.isVerifyingLogin = false
                 TokenStore.delete()
                 self.browserLoginPrompt = .needsLogin
-                self.showAuthAlert(
-                    title: "登录失败",
-                    message: "无法验证凭证，请检查网络后在浏览器重新登录并重试。"
-                )
+                if silent {
+                    self.startLoginPolling()
+                } else {
+                    self.showAuthAlert(
+                        title: "登录失败",
+                        message: "无法验证凭证，请检查网络后在浏览器重新登录并重试。"
+                    )
+                }
             }
         }
     }
