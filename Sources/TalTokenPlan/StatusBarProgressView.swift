@@ -4,6 +4,11 @@ struct BillingSnapshot {
     var ratioPct: Double
     var remaining: Double
     var used: Double
+    var limit: Double = 0
+    var maxModelUsed: Double? = nil
+    var maxModelLimit: Double? = nil
+    var maxModelRemaining: Double? = nil
+    var maxModelRatioPct: Double? = nil
 }
 
 enum StatusBarState {
@@ -48,26 +53,15 @@ final class StatusBarProgressView: NSView {
         case .loading:
             return NSSize(width: 40, height: height)
         case .data(let billing):
-            let settings = currentSettings()
-            if settings.showProgressBar {
-                return capsuleLayoutSize(for: billing, settings: settings, height: height)
+            switch AppSettings.statusBarStyle {
+            case .compact:
+                return NSSize(width: 20, height: height)
+            case .classic:
+                return capsuleLayoutSize(for: billing, height: height)
+            case .rich:
+                return richLayoutSize(for: billing, height: height)
             }
-            if settings.showPercentage || settings.showRemaining {
-                let text = displayText(billing: billing, settings: settings)
-                let size = NSAttributedString(
-                    string: text,
-                    attributes: textAttributes(size: 9, weight: .semibold)
-                ).size()
-                return NSSize(width: ceil(size.width), height: height)
-            }
-            return NSSize(width: 40, height: height)
         }
-    }
-
-    private struct RenderSettings {
-        var showPercentage: Bool
-        var showProgressBar: Bool
-        var showRemaining: Bool
     }
 
     override init(frame frameRect: NSRect) {
@@ -87,12 +81,8 @@ final class StatusBarProgressView: NSView {
         needsDisplay = true
     }
 
-    private func currentSettings() -> RenderSettings {
-        RenderSettings(
-            showPercentage: AppSettings.showPercentage,
-            showProgressBar: AppSettings.showProgressBar,
-            showRemaining: AppSettings.showRemainingCost
-        )
+    private func currentSettings() -> StatusBarStyle {
+        AppSettings.statusBarStyle
     }
 
     func update(state: StatusBarState) {
@@ -102,28 +92,45 @@ final class StatusBarProgressView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let settings = currentSettings()
-
         switch state {
         case .loading:
             drawCenteredPlainText("...", size: 10)
         case .notLoggedIn:
             drawCenteredPlainText("未登录", size: 10)
         case .data(let billing):
-            if settings.showProgressBar {
-                drawCapsuleLayout(billing: billing, settings: settings)
-            } else if settings.showPercentage || settings.showRemaining {
-                drawTextOnlyLayout(billing: billing, settings: settings)
-            } else {
-                drawCenteredPlainText("—", size: 10)
+            switch currentSettings() {
+            case .compact:
+                drawCompactRing(billing: billing)
+            case .classic:
+                drawCapsuleLayout(billing: billing)
+            case .rich:
+                drawRichLayout(billing: billing)
             }
         }
     }
 
-    // MARK: - Capsule layout
+    // MARK: - Compact layout（简约：纯额度环）
 
-    private func drawCapsuleLayout(billing: BillingSnapshot, settings: RenderSettings) {
-        let lines = innerTextLines(billing: billing, settings: settings)
+    private func drawCompactRing(billing: BillingSnapshot) {
+        let diameter = fixedBarHeight - verticalPadding * 2 - 2
+        let rect = NSRect(
+            x: bounds.midX - diameter / 2,
+            y: (bounds.height - diameter) / 2,
+            width: diameter,
+            height: diameter
+        )
+        drawRingProgress(
+            ratio: billing.ratioPct / 100,
+            in: rect.insetBy(dx: 1, dy: 1),
+            cornerRadius: diameter / 2,
+            lineWidth: 3
+        )
+    }
+
+    // MARK: - Capsule layout（经典：环 + 双行数字）
+
+    private func drawCapsuleLayout(billing: BillingSnapshot) {
+        let lines = innerTextLines(billing: billing)
         let attr = capsuleTextAttributedString(lines: lines)
         let textSize = attr.size()
 
@@ -136,7 +143,12 @@ final class StatusBarProgressView: NSView {
         )
         let cornerRadius = capsuleRect.height / 2
 
-        drawRoundedRectRingProgress(ratio: billing.ratioPct / 100, in: capsuleRect, cornerRadius: cornerRadius)
+        drawRingProgress(
+            ratio: billing.ratioPct / 100,
+            in: capsuleRect,
+            cornerRadius: cornerRadius,
+            lineWidth: ringLineWidth
+        )
 
         let textRect = capsuleRect.insetBy(dx: horizontalPadding, dy: verticalPadding)
         attr.draw(in: NSRect(
@@ -148,17 +160,17 @@ final class StatusBarProgressView: NSView {
     }
 
     /// 圆角矩形环形进度：沿边框描边，背景透明；从左侧中点顺时针填充
-    private func drawRoundedRectRingProgress(ratio: Double, in rect: NSRect, cornerRadius: CGFloat) {
+    private func drawRingProgress(ratio: Double, in rect: NSRect, cornerRadius: CGFloat, lineWidth: CGFloat) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
 
-        let inset = ringLineWidth / 2
+        let inset = lineWidth / 2
         let strokeRect = rect.insetBy(dx: inset, dy: inset)
         let radius = max(0, min(cornerRadius - inset, strokeRect.height / 2, strokeRect.width / 2))
         let path = clockwiseRoundedRectRingPath(from: strokeRect, radius: radius)
         let perimeter = ringPerimeter(of: strokeRect, radius: radius)
 
         ctx.saveGState()
-        ctx.setLineWidth(ringLineWidth)
+        ctx.setLineWidth(lineWidth)
         ctx.setLineCap(.round)
         ctx.setLineJoin(.round)
 
@@ -205,8 +217,8 @@ final class StatusBarProgressView: NSView {
         2 * (rect.width + rect.height - 4 * radius) + 2 * .pi * radius
     }
 
-    private func capsuleLayoutSize(for billing: BillingSnapshot, settings: RenderSettings, height: CGFloat) -> NSSize {
-        let lines = innerTextLines(billing: billing, settings: settings)
+    private func capsuleLayoutSize(for billing: BillingSnapshot, height: CGFloat) -> NSSize {
+        let lines = innerTextLines(billing: billing)
         let textSize = capsuleTextAttributedString(lines: lines).size()
         let width = textSize.width + horizontalPadding * 2 + ringLineWidth
         return NSSize(width: ceil(width), height: height)
@@ -230,31 +242,59 @@ final class StatusBarProgressView: NSView {
         return result
     }
 
-    // MARK: - Text-only layout
+    // MARK: - Rich layout（丰富：标签 + 进度条 + 金额）
 
-    private func drawTextOnlyLayout(billing: BillingSnapshot, settings: RenderSettings) {
-        let text = displayText(billing: billing, settings: settings)
-        drawCenteredPlainText(text, size: 9, weight: .semibold)
+    private let richBarWidth: CGFloat = 42
+    private let richBarHeight: CGFloat = 4
+
+    private func richLayoutSize(for billing: BillingSnapshot, height: CGFloat) -> NSSize {
+        let labelW = ceil(("剩余" as NSString).size(withAttributes: textAttributes(size: secondaryFontSize, weight: .medium)).width)
+        let amountW = ceil((amountText(billing) as NSString).size(withAttributes: textAttributes(size: 9, weight: .semibold)).width)
+        let width = horizontalPadding + labelW + 5 + richBarWidth + 5 + amountW + horizontalPadding
+        return NSSize(width: ceil(width), height: height)
     }
 
-    private func displayText(billing: BillingSnapshot, settings: RenderSettings) -> String {
-        innerTextLines(billing: billing, settings: settings).joined(separator: "  ")
+    private func amountText(_ billing: BillingSnapshot) -> String {
+        String(format: "¥%.1f", billing.remaining)
     }
 
-    private func innerTextLines(billing: BillingSnapshot, settings: RenderSettings) -> [String] {
-        var lines: [String] = []
-        if settings.showPercentage {
-            lines.append(String(format: "%.2f%%", billing.ratioPct))
+    private func drawRichLayout(billing: BillingSnapshot) {
+        let labelAttr = NSAttributedString(string: "剩余", attributes: textAttributes(size: secondaryFontSize, weight: .medium))
+        let amountAttr = NSAttributedString(string: amountText(billing), attributes: textAttributes(size: 9, weight: .semibold))
+        let labelSize = labelAttr.size()
+        let amountSize = amountAttr.size()
+
+        var x = bounds.minX + horizontalPadding
+        var y = (bounds.height - labelSize.height) / 2
+        labelAttr.draw(in: NSRect(x: x, y: y, width: labelSize.width, height: labelSize.height))
+        x += labelSize.width + 5
+
+        let barRect = NSRect(x: x, y: (bounds.height - richBarHeight) / 2, width: richBarWidth, height: richBarHeight)
+        drawProgressBar(ratio: billing.ratioPct / 100, in: barRect)
+        x += richBarWidth + 5
+
+        y = (bounds.height - amountSize.height) / 2
+        amountAttr.draw(in: NSRect(x: x, y: y, width: amountSize.width, height: amountSize.height))
+    }
+
+    private func drawProgressBar(ratio: Double, in rect: NSRect) {
+        let radius = rect.height / 2
+        trackRingColor.setFill()
+        NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+        let clamped = max(0, min(1, ratio))
+        if clamped > 0.001 {
+            let fillWidth = max(rect.height, rect.width * CGFloat(clamped))
+            let fillRect = NSRect(x: rect.minX, y: rect.minY, width: fillWidth, height: rect.height)
+            progressRingColor.setFill()
+            NSBezierPath(roundedRect: fillRect, xRadius: radius, yRadius: radius).fill()
         }
-        if settings.showRemaining {
-            lines.append(String(format: "¥%.1f", billing.remaining))
-        } else {
-            lines.append(String(format: "¥%.1f", billing.used))
-        }
-        if lines.isEmpty {
-            lines.append("—")
-        }
-        return lines
+    }
+
+    private func innerTextLines(billing: BillingSnapshot) -> [String] {
+        [
+            String(format: "%.2f%%", billing.ratioPct),
+            String(format: "¥%.1f", billing.remaining),
+        ]
     }
 
     private func drawCenteredPlainText(_ text: String, size: CGFloat, weight: NSFont.Weight = .medium) {

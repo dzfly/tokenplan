@@ -1,21 +1,11 @@
 import AppKit
 import ObjectiveC
 
-struct UsageItem {
-    var time: String
-    var name: String
-    var tokens: String
-    var cost: String
-}
-
 struct DisplayData {
-    var billingLines: [String] = []
-    var usageLines: [String] = []
-    var usageItems: [UsageItem] = []
-    var lastUpdated: String = ""
     var billing: BillingSnapshot?
     var todayTokens: String = ""
     var todayCost: String = ""
+    var lastUpdated: String = ""
 }
 
 enum BrowserLoginPrompt {
@@ -106,7 +96,7 @@ final class MenuActionHost: NSObject {
     enum Action: Int {
         case refresh = 0
         case settings = 1
-        case detail = 2
+        case openMain = 2
         case browserLogin = 3
         case checkUpdates = 4
         case logout = 5
@@ -188,11 +178,6 @@ enum MenuBuilder {
     }
 
     private enum Style {
-        static let usageFontSize: CGFloat = 10
-        static let usageColumnGap: CGFloat = 1
-        static let usageContentInsetX: CGFloat = 6
-        static let usageRowSpacing: CGFloat = 2
-
         static func title(_ text: String) -> NSAttributedString {
             attributed(text, font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold), color: MenuText.caption)
         }
@@ -293,14 +278,6 @@ enum MenuBuilder {
 
         let item = NSMenuItem()
         item.view = wrapper
-        return item
-    }
-
-    /// 卡片外的标题项（浅色小字，置于卡片上方）
-    private static func headerItem(_ text: String) -> NSMenuItem {
-        let item = NSMenuItem()
-        item.attributedTitle = Style.title(text)
-        item.isEnabled = false
         return item
     }
 
@@ -432,79 +409,23 @@ enum MenuBuilder {
         return CardRow(view: line, height: 1)
     }
 
-    /// 用量行：时间 | 模型名 | Token | 金额（Token/金额优先完整显示）
-    private static func usageRow(time: String, name: String, tokens: String, cost: String) -> CardRow {
+    /// 卡片内细进度条行（codexU popover 风格）
+    private static func progressRow(ratio: Double, color: NSColor) -> CardRow {
         let container = NSView()
-        let gap = Style.usageColumnGap
-
-        let timeField = NSTextField(labelWithString: time)
-        timeField.font = .monospacedDigitSystemFont(ofSize: Style.usageFontSize, weight: .regular)
-        timeField.textColor = MenuText.caption
-        timeField.lineBreakMode = .byClipping
-        timeField.sizeToFit()
-
-        let nameField = NSTextField(labelWithString: name)
-        nameField.font = .systemFont(ofSize: Style.usageFontSize, weight: .regular)
-        nameField.textColor = MenuText.cardDataRow
-        nameField.lineBreakMode = .byTruncatingTail
-        nameField.sizeToFit()
-
-        let tokenField = NSTextField(labelWithString: tokens)
-        tokenField.font = .monospacedDigitSystemFont(ofSize: Style.usageFontSize, weight: .regular)
-        tokenField.textColor = MenuText.cardDataRow
-        tokenField.lineBreakMode = .byClipping
-        tokenField.sizeToFit()
-
-        let costField = NSTextField(labelWithString: cost)
-        costField.font = .monospacedDigitSystemFont(ofSize: Style.usageFontSize, weight: .medium)
-        costField.textColor = MenuText.cardAccent
-        costField.lineBreakMode = .byClipping
-        costField.sizeToFit()
-
-        container.addSubview(timeField)
-        container.addSubview(nameField)
-        container.addSubview(tokenField)
-        container.addSubview(costField)
-
-        let rowHeight = max(timeField.fittingSize.height, nameField.fittingSize.height, 16)
-        return CardRow(view: container, height: rowHeight) { frame in
-            let costW = ceil(costField.fittingSize.width)
-            let tokenW = ceil(tokenField.fittingSize.width)
-            let timeW = ceil(timeField.fittingSize.width)
-
-            let costX = frame.width - costW
-            let tokenX = costX - gap - tokenW
-            let nameX = timeW + gap
-            let nameW = max(0, tokenX - gap - nameX)
-
-            timeField.frame = NSRect(
-                x: 0,
-                y: (frame.height - timeField.fittingSize.height) / 2,
-                width: timeW,
-                height: timeField.fittingSize.height
-            )
-            nameField.frame = NSRect(
-                x: nameX,
-                y: (frame.height - nameField.fittingSize.height) / 2,
-                width: nameW,
-                height: nameField.fittingSize.height
-            )
-            tokenField.frame = NSRect(
-                x: tokenX,
-                y: (frame.height - tokenField.fittingSize.height) / 2,
-                width: tokenW,
-                height: tokenField.fittingSize.height
-            )
-            costField.frame = NSRect(
-                x: costX,
-                y: (frame.height - costField.fittingSize.height) / 2,
-                width: costW,
-                height: costField.fittingSize.height
-            )
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor(white: 0.5, alpha: 0.18).cgColor
+        container.layer?.cornerRadius = 3
+        let fill = NSView()
+        fill.wantsLayer = true
+        fill.layer?.backgroundColor = color.cgColor
+        fill.layer?.cornerRadius = 3
+        container.addSubview(fill)
+        let clamped = min(max(ratio, 0), 1)
+        return CardRow(view: container, height: 6) { frame in
+            fill.frame = NSRect(x: 0, y: 0, width: frame.width * CGFloat(clamped), height: frame.height)
         }
     }
 
-    /// 标题行 + 右侧详情图标按钮（用量明细区域用）
     // MARK: - Build
 
     static func build(
@@ -512,7 +433,7 @@ enum MenuBuilder {
         isLoggedIn: Bool,
         onRefresh: @escaping () -> Void,
         onOpenSettings: @escaping () -> Void,
-        onOpenDetail: @escaping () -> Void,
+        onOpenMain: @escaping () -> Void,
         onOpenBrowserLogin: @escaping () -> Void,
         browserLoginPrompt: BrowserLoginPrompt,
         onCheckForUpdates: @escaping () -> Void,
@@ -525,7 +446,7 @@ enum MenuBuilder {
             isLoggedIn: isLoggedIn,
             onRefresh: onRefresh,
             onOpenSettings: onOpenSettings,
-            onOpenDetail: onOpenDetail,
+            onOpenMain: onOpenMain,
             onOpenBrowserLogin: onOpenBrowserLogin,
             browserLoginPrompt: browserLoginPrompt,
             onCheckForUpdates: onCheckForUpdates,
@@ -541,7 +462,7 @@ enum MenuBuilder {
         isLoggedIn: Bool,
         onRefresh: @escaping () -> Void,
         onOpenSettings: @escaping () -> Void,
-        onOpenDetail: @escaping () -> Void,
+        onOpenMain: @escaping () -> Void,
         onOpenBrowserLogin: @escaping () -> Void,
         browserLoginPrompt: BrowserLoginPrompt,
         onCheckForUpdates: @escaping () -> Void,
@@ -553,7 +474,7 @@ enum MenuBuilder {
             isLoggedIn: isLoggedIn,
             onRefresh: onRefresh,
             onOpenSettings: onOpenSettings,
-            onOpenDetail: onOpenDetail,
+            onOpenMain: onOpenMain,
             onOpenBrowserLogin: onOpenBrowserLogin,
             browserLoginPrompt: browserLoginPrompt,
             onCheckForUpdates: onCheckForUpdates,
@@ -568,7 +489,7 @@ enum MenuBuilder {
         isLoggedIn: Bool,
         onRefresh: @escaping () -> Void,
         onOpenSettings: @escaping () -> Void,
-        onOpenDetail: @escaping () -> Void,
+        onOpenMain: @escaping () -> Void,
         onOpenBrowserLogin: @escaping () -> Void,
         browserLoginPrompt: BrowserLoginPrompt,
         onCheckForUpdates: @escaping () -> Void,
@@ -579,7 +500,7 @@ enum MenuBuilder {
         let host = MenuActionHost()
         host.set(.refresh, handler: onRefresh)
         host.set(.settings, handler: onOpenSettings)
-        host.set(.detail, handler: onOpenDetail)
+        host.set(.openMain, handler: onOpenMain)
         host.set(.browserLogin, handler: onOpenBrowserLogin)
         host.set(.checkUpdates, handler: onCheckForUpdates)
         host.set(.logout, handler: onLogout)
@@ -587,49 +508,33 @@ enum MenuBuilder {
         objc_setAssociatedObject(menu, &hostKey, host, .OBJC_ASSOCIATION_RETAIN)
 
         if isLoggedIn {
-            // 卡片1：账单总览（标题在卡片外，右侧刷新图标按钮）
-            menu.addItem(headerWithIconButton("账单总览", host: host, buttons: [
+            menu.addItem(headerWithIconButton("账单概览", host: host, buttons: [
                 HeaderIconButton(action: .refresh, symbolName: "arrow.clockwise", accessibilityDesc: "刷新", keepsMenuOpen: true),
             ]))
             var rows: [CardRow] = []
-            if data.billingLines.isEmpty {
+            if let b = data.billing {
+                rows.append(dataRow("已用: \(MenuBuilder.formatBillingCost(b.used)) / \(MenuBuilder.formatBillingCost(b.limit))（\(String(format: "%.1f", b.ratioPct))%）"))
+                rows.append(progressRow(ratio: b.ratioPct / 100, color: .controlAccentColor))
+                rows.append(dataRow("剩余: \(MenuBuilder.formatBillingCost(b.remaining))"))
+                if let maxUsed = b.maxModelUsed, let maxLimit = b.maxModelLimit {
+                    let pctText = b.maxModelRatioPct.map { String(format: "%.1f", $0) } ?? "-"
+                    rows.append(dataRow("Max: \(MenuBuilder.formatBillingCost(maxUsed)) / \(MenuBuilder.formatBillingCost(maxLimit))（\(pctText)%）"))
+                    if let maxRemaining = b.maxModelRemaining {
+                        rows.append(dataRow("Max 剩余: \(MenuBuilder.formatBillingCost(maxRemaining))"))
+                    }
+                }
+                rows.append(separatorRow())
+                rows.append(dataRow("今日 Token: \(data.todayTokens)   金额: \(data.todayCost)"))
+            } else {
                 rows.append(buttonRow(title: "暂无数据，点击刷新", symbolName: "arrow.clockwise",
                                       action: .refresh, host: host, hintStyle: true))
-            } else {
-                for line in data.billingLines { rows.append(dataRow(line)) }
             }
             menu.addItem(cardItem(rows: rows))
 
-            // 卡片：今日用量（置于用量明细上方）
-            if !data.todayTokens.isEmpty {
-                menu.addItem(spacerItem(height: 6))
-                menu.addItem(headerWithIconButton("今日用量", host: host, buttons: []))
-                menu.addItem(cardItem(rows: [
-                    dataRow("Token: \(data.todayTokens)"),
-                    dataRow("金额: \(data.todayCost)"),
-                ]))
-            }
-
-            // 卡片2：用量明细（标题+详情图标在卡片外，卡片内只放用量行）
-            if !data.usageItems.isEmpty {
-                menu.addItem(spacerItem(height: 6))
-                menu.addItem(headerWithIconButton("用量明细", host: host, buttons: [
-                    HeaderIconButton(action: .detail, symbolName: "arrow.up.forward.square", accessibilityDesc: "查看详情"),
-                ]))
-                var usageRows: [CardRow] = []
-                for item in data.usageItems {
-                    usageRows.append(usageRow(time: item.time, name: item.name, tokens: item.tokens, cost: item.cost))
-                }
-                menu.addItem(cardItem(
-                    rows: usageRows,
-                    contentInsetX: Style.usageContentInsetX,
-                    rowSpacing: Style.usageRowSpacing
-                ))
-            }
-
-            // 操作按钮：设置 + 退出
             menu.addItem(spacerItem(height: 6))
             menu.addItem(cardItem(rows: [
+                buttonRow(title: "打开主界面", symbolName: "macwindow", action: .openMain, host: host),
+                separatorRow(),
                 buttonRow(title: "设置", symbolName: "gearshape", action: .settings, host: host),
                 separatorRow(),
                 buttonRow(title: "退出", symbolName: "power", action: .quit, host: host),
@@ -683,21 +588,6 @@ enum MenuBuilder {
     static func formatUsageCost(_ v: Double?) -> String {
         guard let v = v else { return "-" }
         return String(format: "¥%.4f", v)
-    }
-
-    static func formatCacheHitRate(_ percent: Double?) -> String {
-        guard let percent else { return "-" }
-        return String(format: "%.2f%%", percent)
-    }
-
-    static func formatRequestTime(_ timestamp: Int64?) -> String {
-        guard let timestamp, timestamp > 0 else { return "--/-- --:--:--" }
-        let seconds: TimeInterval = timestamp > 1_000_000_000_000
-            ? TimeInterval(timestamp) / 1000
-            : TimeInterval(timestamp)
-        let formatter = DateFormatter()
-        formatter.dateFormat = "M/d HH:mm:ss"
-        return formatter.string(from: Date(timeIntervalSince1970: seconds))
     }
 
     static func actionHost(for menu: NSMenu?) -> MenuActionHost? {

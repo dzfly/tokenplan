@@ -5,6 +5,8 @@ import AppKit
     private var statusBarView: StatusBarProgressView!
     private var refreshTimer: Timer?
     private var settingsWindow: SettingsWindowController?
+    private var mainWindowController: MainWindowController?
+    private var dashboardViewModel: DashboardViewModel?
     private var displayData = DisplayData()
     private var isLoading = false
     private var isLoggedIn = false
@@ -32,6 +34,7 @@ import AppKit
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        DashboardTheme.apply()
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         setupStatusBarView()
@@ -89,6 +92,9 @@ import AppKit
     }
 
     @objc private func settingsDidChange() {
+        mainWindowController?.syncAppearance(AppSettings.appearanceMode)
+        settingsWindow?.syncAppearance(AppSettings.appearanceMode)
+        statusBarView.needsDisplay = true
         resizeStatusBar()
         if isLoggedIn, let billing = displayData.billing {
             updateStatusBar(state: .data(billing))
@@ -100,9 +106,11 @@ import AppKit
         scheduleRefreshTimer()
     }
 
+    private static let refreshInterval: TimeInterval = 60
+
     private func scheduleRefreshTimer() {
         refreshTimer?.invalidate()
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: AppSettings.refreshInterval, repeats: true) { [weak self] _ in
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: Self.refreshInterval, repeats: true) { [weak self] _ in
             guard self?.isLoggedIn == true else { return }
             self?.refresh(silent: true)
         }
@@ -135,7 +143,7 @@ import AppKit
     }
 
     private func makeStatusMenu() -> NSMenu {
-        MenuBuilder.build(
+        let menu = MenuBuilder.build(
             data: displayData,
             isLoggedIn: isLoggedIn,
             onRefresh: { [weak self] in self?.refreshFromMenu() },
@@ -143,7 +151,7 @@ import AppKit
                 self?.statusItem.menu?.cancelTracking()
                 DispatchQueue.main.async { self?.showSettings() }
             },
-            onOpenDetail: { [weak self] in self?.openDetailPage() },
+            onOpenMain: { [weak self] in self?.openMainWindow() },
             onOpenBrowserLogin: { [weak self] in self?.startBrowserLoginFlow() },
             browserLoginPrompt: browserLoginPrompt,
             onCheckForUpdates: { AppUpdaterManager.shared.checkForUpdates() },
@@ -155,6 +163,8 @@ import AppKit
                 }
             }
         )
+        menu.appearance = AppSettings.appearanceMode.nsAppearance
+        return menu
     }
 
     private func refreshFromMenu() {
@@ -189,7 +199,7 @@ import AppKit
                 self?.statusItem.menu?.cancelTracking()
                 DispatchQueue.main.async { self?.showSettings() }
             },
-            onOpenDetail: { [weak self] in self?.openDetailPage() },
+            onOpenMain: { [weak self] in self?.openMainWindow() },
             onOpenBrowserLogin: { [weak self] in self?.startBrowserLoginFlow() },
             browserLoginPrompt: browserLoginPrompt,
             onCheckForUpdates: { AppUpdaterManager.shared.checkForUpdates() },
@@ -201,6 +211,7 @@ import AppKit
                 }
             }
         )
+        menu.appearance = AppSettings.appearanceMode.nsAppearance
     }
 
     private func refresh(silent: Bool = false) {
@@ -254,6 +265,9 @@ import AppKit
             }
             self.updateDisplay(billing: billing, usage: usage)
             self.refreshActiveMenuIfNeeded()
+            if let window = self.mainWindowController?.window, window.isVisible {
+                MainActor.assumeIsolated { self.dashboardViewModel?.refresh() }
+            }
         }
     }
 
@@ -283,87 +297,35 @@ import AppKit
         if billing == nil && usage == nil { return }
 
         var data = DisplayData()
+        data.billing = displayData.billing
+        data.todayTokens = displayData.todayTokens
+        data.todayCost = displayData.todayCost
 
         if let b = billing {
             let cs = b.costSummary
-            let ratioPct = (cs.usageRatio ?? (cs.used / cs.limit)) * 100
-            let ratioStr = String(format: "%.2f", ratioPct)
-            let tokenUsage = b.tokenUsage ?? TokenUsageDetail.aggregate(from: usage?.list ?? [])
-            data.billingLines = [
-                "已用: \(MenuBuilder.formatBillingCost(cs.used)) / \(MenuBuilder.formatBillingCost(cs.limit))  (\(ratioStr)%)",
-                "剩余: \(MenuBuilder.formatBillingCost(cs.remaining))",
-            ]
-            if let maxUsed = cs.maxModelUsed, let maxLimit = cs.maxModelLimit {
-                let maxRatio = cs.maxModelUsageRatio ?? (maxLimit > 0 ? maxUsed / maxLimit : 0)
-                let maxRatioStr = String(format: "%.2f", maxRatio * 100)
-                data.billingLines.append(
-                    "Max 已用: \(MenuBuilder.formatBillingCost(maxUsed)) / \(MenuBuilder.formatBillingCost(maxLimit))  (\(maxRatioStr)%)"
-                )
-                if let maxRemaining = cs.maxModelRemaining {
-                    data.billingLines.append(
-                        "Max 剩余: \(MenuBuilder.formatBillingCost(maxRemaining))"
-                    )
-                }
+            let ratioPct = (cs.usageRatio ?? (cs.limit > 0 ? cs.used / cs.limit : 0)) * 100
+            var maxRatioPct: Double?
+            if let maxUsed = cs.maxModelUsed, let maxLimit = cs.maxModelLimit, maxLimit > 0 {
+                maxRatioPct = (cs.maxModelUsageRatio ?? maxUsed / maxLimit) * 100
             }
-            data.billingLines += [
-                "Token 总计: \(MenuBuilder.formatTokens(tokenUsage.totalTokens))",
-                "输入 Token: \(MenuBuilder.formatTokens(tokenUsage.inputTokens))",
-                "输出 Token: \(MenuBuilder.formatTokens(tokenUsage.outputTokens))",
-            ]
-            let cacheStats = tokenUsage.hasCacheData
-                ? tokenUsage
-                : TokenUsageDetail.aggregate(from: usage?.list ?? [])
-            if cacheStats.hasCacheData {
-                data.billingLines += [
-                    "缓存读取: \(MenuBuilder.formatTokens(cacheStats.cacheReadTokens))",
-                    "缓存写入: \(MenuBuilder.formatTokens(cacheStats.cacheWriteTokens))",
-                    "缓存命中率: \(MenuBuilder.formatCacheHitRate(cacheStats.cacheHitRatePercent))",
-                ]
-            }
-            data.billing = BillingSnapshot(ratioPct: ratioPct, remaining: cs.remaining, used: cs.used)
+            data.billing = BillingSnapshot(
+                ratioPct: ratioPct,
+                remaining: cs.remaining,
+                used: cs.used,
+                limit: cs.limit,
+                maxModelUsed: cs.maxModelUsed,
+                maxModelLimit: cs.maxModelLimit,
+                maxModelRemaining: cs.maxModelRemaining,
+                maxModelRatioPct: maxRatioPct
+            )
             updateStatusBar(state: .data(data.billing!))
-        } else {
-            data.billingLines = displayData.billingLines
-            data.billing = displayData.billing
         }
 
-        let usageList: [UsageResponse.UsageItem]
         if let usage {
-            usageList = usage.listSortedByRequestTimeDesc
-            if usageList.isEmpty {
-                data.todayTokens = MenuBuilder.formatTokens(0)
-                data.todayCost = MenuBuilder.formatUsageCost(0)
-            } else {
-                let agg = TokenUsageDetail.aggregate(from: usageList)
-                data.todayTokens = MenuBuilder.formatTokens(agg.totalTokens)
-                data.todayCost = MenuBuilder.formatUsageCost(usageList.compactMap { $0.costs }.reduce(0, +))
-            }
-        } else {
-            data.usageItems = displayData.usageItems
-            data.usageLines = displayData.usageLines
-            data.todayTokens = displayData.todayTokens
-            data.todayCost = displayData.todayCost
-            usageList = []
-        }
-
-        if !usageList.isEmpty || usage != nil {
-            let displayList = Array(usageList.prefix(10))
-            data.usageLines = displayList.map { item in
-                let tok = MenuBuilder.formatTokens(item.tokenUsage?.totalTokens)
-                let cost = item.costs.map { MenuBuilder.formatUsageCost($0) } ?? "-"
-                return "[\(item.channelName ?? "-")] \(item.model ?? "-"): \(tok) | \(cost)"
-            }
-            data.usageItems = displayList.map { item in
-                let name = item.model ?? "-"
-                let tok = MenuBuilder.formatTokens(item.tokenUsage?.totalTokens)
-                let cost = item.costs.map { MenuBuilder.formatUsageCost($0) } ?? "-"
-                return UsageItem(
-                    time: MenuBuilder.formatRequestTime(item.requestTime),
-                    name: name,
-                    tokens: tok,
-                    cost: cost
-                )
-            }
+            let list = usage.list ?? []
+            let agg = TokenUsageDetail.aggregate(from: list)
+            data.todayTokens = MenuBuilder.formatTokens(agg.totalTokens)
+            data.todayCost = MenuBuilder.formatUsageCost(list.compactMap { $0.costs }.reduce(0, +))
         }
 
         let fmt = DateFormatter()
@@ -660,8 +622,19 @@ import AppKit
         settingsWindow?.showSettings()
     }
 
-    private func openDetailPage() {
-        NSWorkspace.shared.open(AppURLs.detailPage)
+    private func openMainWindow() {
+        // 菜单点击保证在主线程；DashboardViewModel 为 @MainActor，这里显式断言
+        MainActor.assumeIsolated {
+            if mainWindowController == nil {
+                let vm = DashboardViewModel()
+                vm.onUnauthorized = { [weak self] in self?.handleUnauthorized() }
+                vm.onBrowserLogin = { [weak self] in self?.startBrowserLoginFlow() }
+                dashboardViewModel = vm
+                mainWindowController = MainWindowController(viewModel: vm)
+            }
+            mainWindowController?.showDashboard()
+            dashboardViewModel?.refresh()
+        }
     }
 
     private func showAuthAlert(title: String, message: String) {

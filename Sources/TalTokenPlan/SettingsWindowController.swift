@@ -1,523 +1,364 @@
 import AppKit
+import SwiftUI
 
-/// 顶部 tab：单个指示条点击后左右滑动
-final class SegmentedTabView: NSView {
-    private let titles: [String]
-    private var buttons: [NSButton] = []
-    private let indicator = NSView()
-    private(set) var selectedIndex = 0
-    var onChange: ((Int) -> Void)?
+// MARK: - 设置页视觉常量（对齐 codexU SettingsPanelView）
 
-    private let segmentInset: CGFloat = 3
+private enum SettingsMetrics {
+    static let accessoryColumnWidth: CGFloat = 220
+    static let controlCornerRadius: CGFloat = 8
+    static let segmentHeight: CGFloat = 30
+    static let controlVisualHeight: CGFloat = segmentHeight + 6
+    static let sectionTitleFontSize: CGFloat = 12.5
+    static let sectionDetailFontSize: CGFloat = 10
+    static let rowTitleFontSize: CGFloat = 11.5
+    static let rowDetailFontSize: CGFloat = 9.5
+    static let controlFontSize: CGFloat = 11
+}
 
-    init(titles: [String]) {
-        self.titles = titles
-        super.init(frame: .zero)
-        wantsLayer = true
-        layer?.cornerCurve = .continuous
-        layer?.backgroundColor = NSColor(white: 0, alpha: 0.05).cgColor
+private enum ControlPalette {
+    static func fill(_ dark: Bool) -> Color { dark ? Color.white.opacity(0.085) : Color.white.opacity(0.52) }
+    static func selectedFill(_ dark: Bool) -> Color { dark ? Color.white.opacity(0.18) : Color.black.opacity(0.105) }
+    static func stroke(_ dark: Bool) -> Color { dark ? Color.white.opacity(0.07) : Color.black.opacity(0.05) }
+    static func cardFill(_ dark: Bool) -> Color { dark ? Color.white.opacity(0.05) : Color.white.opacity(0.45) }
+    static func cardStroke(_ dark: Bool) -> Color { dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06) }
+}
 
-        indicator.wantsLayer = true
-        indicator.layer?.cornerCurve = .continuous
-        indicator.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
-        addSubview(indicator)
+/// 玻璃窗口背景（对齐 codexU LiquidGlassWindowBackdrop）
+private struct GlassBackdrop: View {
+    let dark: Bool
 
-        for (i, title) in titles.enumerated() {
-            let btn = NSButton()
-            btn.isBordered = false
-            btn.bezelStyle = .inline
-            btn.attributedTitle = tabTitle(title, selected: i == 0)
-            btn.alignment = .center
-            btn.tag = i
-            btn.target = self
-            btn.action = #selector(tabClicked(_:))
-            btn.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(btn)
-            buttons.append(btn)
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: dark
+                    ? [Color.white.opacity(0.055), Color.clear, Color.black.opacity(0.10)]
+                    : [Color.white.opacity(0.40), Color.white.opacity(0.10), Color.black.opacity(0.025)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            RadialGradient(
+                colors: [Color.white.opacity(dark ? 0.05 : 0.35), Color.clear],
+                center: UnitPoint(x: 0.88, y: 0.02),
+                startRadius: 10,
+                endRadius: 420
+            )
         }
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    private func tabTitle(_ title: String, selected: Bool) -> NSAttributedString {
-        NSAttributedString(
-            string: title,
-            attributes: [
-                .font: NSFont.systemFont(ofSize: 13, weight: selected ? .semibold : .medium),
-                .foregroundColor: selected ? NSColor.white : NSColor.labelColor,
-            ]
-        )
-    }
-
-    @objc private func tabClicked(_ sender: NSButton) {
-        select(sender.tag, animated: true)
-    }
-
-    func select(_ index: Int, animated: Bool) {
-        guard buttons.indices.contains(index) else { return }
-        selectedIndex = index
-        for (i, btn) in buttons.enumerated() {
-            btn.attributedTitle = tabTitle(titles[i], selected: i == index)
-        }
-        moveIndicator(to: index, animated: animated)
-        onChange?(index)
-    }
-
-    private func indicatorFrame(for index: Int) -> NSRect {
-        let count = CGFloat(buttons.count)
-        guard count > 0, bounds.width > 0 else { return .zero }
-        let segW = bounds.width / count
-        return NSRect(
-            x: segW * CGFloat(index) + segmentInset,
-            y: segmentInset,
-            width: segW - segmentInset * 2,
-            height: bounds.height - segmentInset * 2
-        )
-    }
-
-    private func moveIndicator(to index: Int, animated: Bool) {
-        let frame = indicatorFrame(for: index)
-        if animated {
-            NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = 0.25
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                indicator.animator().frame = frame
-            }, completionHandler: { [weak self] in
-                self?.updateCornerRadii()
-            })
-        } else {
-            indicator.frame = frame
-            updateCornerRadii()
-        }
-    }
-
-    private func updateCornerRadii() {
-        guard bounds.height > 0 else { return }
-        layer?.cornerRadius = bounds.height / 2
-        let indicatorHeight = indicator.frame.height
-        if indicatorHeight > 0 {
-            indicator.layer?.cornerRadius = indicatorHeight / 2
-        }
-    }
-
-    override func layout() {
-        super.layout()
-        let count = CGFloat(buttons.count)
-        guard count > 0, bounds.width > 0 else { return }
-        let btnW = bounds.width / count
-        for (i, btn) in buttons.enumerated() {
-            btn.frame = NSRect(x: btnW * CGFloat(i), y: 0, width: btnW, height: bounds.height)
-        }
-        if indicator.frame == .zero {
-            indicator.frame = indicatorFrame(for: selectedIndex)
-        }
-        updateCornerRadii()
     }
 }
 
-/// ScrollView 文档视图：翻转坐标系，短内容默认从顶部显示
-private final class FlippedDocumentView: NSView {
-    override var isFlipped: Bool { true }
+// MARK: - 行与分区组件
+
+private struct SettingsRow<Accessory: View>: View {
+    let title: String
+    let detail: String
+    @ViewBuilder let accessory: Accessory
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 14) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: SettingsMetrics.rowTitleFontSize, weight: .semibold))
+                    .foregroundStyle(.primary)
+                Text(detail)
+                    .font(.system(size: SettingsMetrics.rowDetailFontSize, weight: .regular))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            accessory
+                .frame(width: SettingsMetrics.accessoryColumnWidth, alignment: .trailing)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
 }
 
+private struct SettingsSection<Content: View>: View {
+    let title: String
+    let detail: String
+    let dark: Bool
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(title)
+                    .font(.system(size: SettingsMetrics.sectionTitleFontSize, weight: .semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 12)
+                Text(detail)
+                    .font(.system(size: SettingsMetrics.sectionDetailFontSize, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            VStack(spacing: 0) { content }
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(ControlPalette.cardFill(dark))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(ControlPalette.cardStroke(dark), lineWidth: 0.8)
+                )
+        }
+    }
+}
+
+private struct SettingsSegmentedControl: View {
+    let dark: Bool
+    let accent: Color
+    @Binding var selection: String
+    let options: [(value: String, title: String)]
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(options.enumerated()), id: \.offset) { index, option in
+                Button {
+                    selection = option.value
+                } label: {
+                    Text(option.title)
+                        .font(.system(size: SettingsMetrics.controlFontSize, weight: selection == option.value ? .semibold : .medium))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                        .foregroundStyle(selection == option.value ? Color.white : Color.secondary)
+                        .frame(maxWidth: .infinity, minHeight: SettingsMetrics.segmentHeight)
+                        .background(
+                            RoundedRectangle(cornerRadius: SettingsMetrics.controlCornerRadius, style: .continuous)
+                                .fill(selection == option.value ? accent : Color.clear)
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                if index < options.count - 1 {
+                    Rectangle()
+                        .fill(ControlPalette.stroke(dark))
+                        .frame(width: 1, height: 16)
+                        .padding(.horizontal, 1)
+                }
+            }
+        }
+        .padding(3)
+        .frame(width: SettingsMetrics.accessoryColumnWidth, height: SettingsMetrics.controlVisualHeight)
+        .background(
+            RoundedRectangle(cornerRadius: SettingsMetrics.controlCornerRadius, style: .continuous)
+                .fill(ControlPalette.fill(dark))
+                .overlay(
+                    RoundedRectangle(cornerRadius: SettingsMetrics.controlCornerRadius, style: .continuous)
+                        .strokeBorder(ControlPalette.stroke(dark), lineWidth: 0.8)
+                )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: SettingsMetrics.controlCornerRadius, style: .continuous))
+    }
+}
+
+private struct StatusPreview: NSViewRepresentable {
+    /// 持有 style 以便样式变化时触发 updateNSView（绘制本身读取全局设置）
+    let style: StatusBarStyle
+
+    func makeNSView(context: Context) -> StatusBarProgressView {
+        let view = StatusBarProgressView(frame: NSRect(x: 0, y: 0, width: 160, height: 22))
+        view.update(state: .data(Self.sample))
+        return view
+    }
+
+    func updateNSView(_ view: StatusBarProgressView, context: Context) {
+        view.update(state: .data(Self.sample))
+    }
+
+    private static let sample = BillingSnapshot(
+        ratioPct: 45.20, remaining: 1234.5, used: 987.6, limit: 2222.1
+    )
+}
+
+// MARK: - 设置面板（SwiftUI，结构对齐 codexU SettingsPanelView）
+
+private struct SettingsPanelView: View {
+    @State private var appearance = AppSettings.appearanceMode.rawValue
+    @State private var paletteID = AppSettings.paletteID
+    @State private var style = AppSettings.statusBarStyle.rawValue
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var dark: Bool { colorScheme == .dark }
+    private var accent: Color { DashboardTheme.current.accentPrimary }
+
+    var body: some View {
+        ZStack {
+            GlassBackdrop(dark: dark)
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 16) {
+                    settingsHeader
+                    generalSection
+                    menuBarSection
+                    aboutSection
+                }
+                .padding(.horizontal, 22)
+                .padding(.top, 18)
+                .padding(.bottom, 24)
+            }
+        }
+        .preferredColorScheme(preferredScheme)
+        .onChange(of: appearance) { newValue in
+            AppSettings.appearanceMode = AppearanceMode(rawValue: newValue) ?? .dark
+        }
+        .onChange(of: paletteID) { newValue in
+            AppSettings.paletteID = newValue
+        }
+        .onChange(of: style) { newValue in
+            AppSettings.statusBarStyle = StatusBarStyle(rawValue: newValue) ?? .classic
+        }
+    }
+
+    private var preferredScheme: ColorScheme? {
+        switch appearance {
+        case "system": return nil
+        case "light": return .light
+        default: return .dark
+        }
+    }
+
+    private var settingsHeader: some View {
+        HStack(spacing: 10) {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 32, height: 32)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("设置")
+                    .font(.system(size: 18, weight: .semibold, design: .rounded))
+                Text(AppInfo.name)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+    }
+
+    private var generalSection: some View {
+        SettingsSection(title: "通用", detail: "界面偏好", dark: dark) {
+            SettingsRow(title: "外观", detail: "默认深色，可跟随系统") {
+                SettingsSegmentedControl(
+                    dark: dark,
+                    accent: accent,
+                    selection: $appearance,
+                    options: [
+                        (AppearanceMode.system.rawValue, "跟随系统"),
+                        (AppearanceMode.light.rawValue, "浅色"),
+                        (AppearanceMode.dark.rawValue, "深色"),
+                    ]
+                )
+            }
+            SettingsRow(title: "配色", detail: "精选内置配色，同时适配浅色与深色") {
+                SettingsSegmentedControl(
+                    dark: dark,
+                    accent: accent,
+                    selection: $paletteID,
+                    options: DashboardTheme.all.map { ($0.id, $0.name) }
+                )
+            }
+        }
+    }
+
+    private var menuBarSection: some View {
+        SettingsSection(title: "状态栏", detail: "内容与显示密度", dark: dark) {
+            SettingsRow(title: "显示样式", detail: "简约 / 经典 / 丰富") {
+                SettingsSegmentedControl(
+                    dark: dark,
+                    accent: accent,
+                    selection: $style,
+                    options: StatusBarStyle.allCases.map { ($0.rawValue, $0.title) }
+                )
+            }
+            SettingsRow(title: "实时预览", detail: "菜单栏中的实际效果") {
+                StatusPreview(style: StatusBarStyle(rawValue: style) ?? .classic)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.black.opacity(0.55))
+                    )
+                    .frame(width: SettingsMetrics.accessoryColumnWidth, alignment: .center)
+            }
+        }
+    }
+
+    private var aboutSection: some View {
+        SettingsSection(title: "关于", detail: AppInfo.name, dark: dark) {
+            SettingsRow(title: "版本", detail: "当前安装的版本") {
+                Text("v\(AppInfo.version)")
+                    .font(.system(size: SettingsMetrics.controlFontSize, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            SettingsRow(title: "检查更新", detail: "从发布源检查新版本") {
+                Button {
+                    AppUpdaterManager.shared.checkForUpdates()
+                } label: {
+                    Text("检查更新")
+                        .font(.system(size: SettingsMetrics.controlFontSize, weight: .medium))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 5)
+                        .background(
+                            RoundedRectangle(cornerRadius: SettingsMetrics.controlCornerRadius, style: .continuous)
+                                .fill(ControlPalette.fill(dark))
+                        )
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.primary)
+            }
+        }
+    }
+}
+
+// MARK: - 窗口壳（AppKit 毛玻璃 + SwiftUI 面板）
 
 final class SettingsWindowController: NSWindowController {
-    private var segmentedControl: SegmentedTabView!
-    private var contentContainer: NSScrollView!
-    private var documentView: NSView!
-    private var activeDocumentBottomConstraint: NSLayoutConstraint?
-    private var generalView: NSView!
-    private var aboutView: NSView!
-
-    private var showRemainingSwitch: NSSwitch!
-    private var showPercentageSwitch: NSSwitch!
-    private var showProgressBarSwitch: NSSwitch!
-    private var refreshIntervalSlider: NSSlider!
-    private var refreshIntervalLabel: NSTextField!
-
     convenience init() {
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 440),
-            styleMask: [.titled, .closable],
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 660),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         win.title = "设置"
+        win.titlebarAppearsTransparent = true
+        win.titleVisibility = .hidden
+        win.isOpaque = false
+        win.backgroundColor = .clear
+        win.minSize = NSSize(width: 500, height: 560)
         win.center()
         self.init(window: win)
         setupUI()
     }
 
     private func setupUI() {
-        let container = window!.contentView!
+        guard let container = window?.contentView else { return }
+        DashboardTheme.apply()
+        window?.appearance = AppSettings.appearanceMode.nsAppearance
 
-        // 顶部 tab：指示条左右移动样式
-        segmentedControl = SegmentedTabView(titles: ["通用", "关于"])
-        segmentedControl.translatesAutoresizingMaskIntoConstraints = false
-        segmentedControl.onChange = { [weak self] idx in self?.showTab(idx) }
-        segmentedControl.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        let effect = NSVisualEffectView(frame: container.bounds)
+        effect.material = .hudWindow
+        effect.blendingMode = .behindWindow
+        effect.state = .active
+        effect.autoresizingMask = [.width, .height]
+        container.addSubview(effect)
 
-        contentContainer = NSScrollView()
-        contentContainer.translatesAutoresizingMaskIntoConstraints = false
-        contentContainer.hasVerticalScroller = true
-        contentContainer.autohidesScrollers = true
-        contentContainer.drawsBackground = false
-        contentContainer.borderType = .noBorder
-
-        let documentView = FlippedDocumentView()
-        documentView.translatesAutoresizingMaskIntoConstraints = false
-        contentContainer.documentView = documentView
-        self.documentView = documentView
-
-        generalView = buildGeneralView()
-        aboutView = buildAboutView()
-
-        container.addSubview(segmentedControl)
-        container.addSubview(contentContainer)
-        documentView.addSubview(generalView)
-        documentView.addSubview(aboutView)
-
-        let clipView = contentContainer.contentView
-        NSLayoutConstraint.activate([
-            segmentedControl.topAnchor.constraint(equalTo: container.topAnchor, constant: 20),
-            segmentedControl.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
-            segmentedControl.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
-
-            contentContainer.topAnchor.constraint(equalTo: segmentedControl.bottomAnchor, constant: 16),
-            contentContainer.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
-            contentContainer.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
-            contentContainer.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -20),
-
-            documentView.leadingAnchor.constraint(equalTo: clipView.leadingAnchor),
-            documentView.trailingAnchor.constraint(equalTo: clipView.trailingAnchor),
-            documentView.topAnchor.constraint(equalTo: clipView.topAnchor),
-            documentView.widthAnchor.constraint(equalTo: clipView.widthAnchor),
-
-            generalView.topAnchor.constraint(equalTo: documentView.topAnchor),
-            generalView.leadingAnchor.constraint(equalTo: documentView.leadingAnchor),
-            generalView.trailingAnchor.constraint(equalTo: documentView.trailingAnchor),
-
-            aboutView.topAnchor.constraint(equalTo: documentView.topAnchor),
-            aboutView.leadingAnchor.constraint(equalTo: documentView.leadingAnchor),
-            aboutView.trailingAnchor.constraint(equalTo: documentView.trailingAnchor),
-        ])
-
-        showTab(0)
+        let hostingView = NSHostingView(rootView: SettingsPanelView())
+        hostingView.frame = effect.bounds
+        hostingView.autoresizingMask = [.width, .height]
+        effect.addSubview(hostingView)
     }
 
-    // MARK: - Card
-
-    /// 纯色卡片容器（无毛玻璃）
-    private func makeCard() -> NSView {
-        let card = NSView()
-        card.wantsLayer = true
-        card.layer?.cornerRadius = 12
-        card.layer?.cornerCurve = .continuous
-        card.layer?.masksToBounds = true
-        card.layer?.backgroundColor = cardFillColor().cgColor
-        card.layer?.borderWidth = 0.5
-        card.layer?.borderColor = cardBorderColor().cgColor
-        card.translatesAutoresizingMaskIntoConstraints = false
-        return card
-    }
-
-    private func cardFillColor() -> NSColor {
-        NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(white: 1.0, alpha: 0.07)
-            : NSColor(white: 0.0, alpha: 0.04)
-    }
-
-    private func cardBorderColor() -> NSColor {
-        NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(white: 1.0, alpha: 0.12)
-            : NSColor(white: 0.0, alpha: 0.08)
-    }
-
-    private func cardSection(title: String, content: (NSStackView) -> Void) -> NSView {
-        let wrapper = NSView()
-        wrapper.translatesAutoresizingMaskIntoConstraints = false
-
-        let card = makeCard()
-        wrapper.addSubview(card)
-        NSLayoutConstraint.activate([
-            card.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor),
-            card.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor),
-            card.topAnchor.constraint(equalTo: wrapper.topAnchor),
-            card.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor),
-        ])
-
-        let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 11, weight: .semibold)
-        titleLabel.textColor = .secondaryLabelColor
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let contentStack = NSStackView()
-        contentStack.orientation = .vertical
-        contentStack.alignment = .leading
-        contentStack.spacing = 10
-        contentStack.translatesAutoresizingMaskIntoConstraints = false
-
-        card.addSubview(titleLabel)
-        card.addSubview(contentStack)
-        NSLayoutConstraint.activate([
-            titleLabel.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
-            titleLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
-            titleLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
-
-            contentStack.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8),
-            contentStack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
-            contentStack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
-            contentStack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
-        ])
-
-        content(contentStack)
-        return wrapper
-    }
-
-    // MARK: - General
-
-    private func buildGeneralView() -> NSView {
-        let view = NSView()
-        view.translatesAutoresizingMaskIntoConstraints = false
-
-        showRemainingSwitch = makeSwitch(title: "", value: AppSettings.showRemainingCost, action: #selector(toggleShowRemaining))
-        showPercentageSwitch = makeSwitch(title: "", value: AppSettings.showPercentage, action: #selector(toggleShowPercentage))
-        showProgressBarSwitch = makeSwitch(title: "", value: AppSettings.showProgressBar, action: #selector(toggleShowProgressBar))
-
-        let remainingRow = switchRow(title: "显示剩余金额", subtitle: "关闭则显示花费金额", sw: showRemainingSwitch)
-        let percentageRow = switchRow(title: "显示百分比", subtitle: nil, sw: showPercentageSwitch)
-        let progressRow = switchRow(title: "显示进度条", subtitle: nil, sw: showProgressBarSwitch)
-
-        let displayCard = cardSection(title: "状态栏显示") { stack in
-            [remainingRow, percentageRow, progressRow].forEach {
-                stack.addArrangedSubview($0)
-                stack.addArrangedSubview(self.separator())
-            }
-        }
-
-        let refreshCard = buildRefreshIntervalCard()
-
-        let installHint = NSTextField(wrappingLabelWithString: "登录：在默认浏览器完成 cloud.tal.com 登录后，使用「从浏览器读取凭证」。首次读取时请在钥匙串弹窗中点「始终允许」。")
-        installHint.font = .systemFont(ofSize: 11)
-        installHint.textColor = .secondaryLabelColor
-        installHint.translatesAutoresizingMaskIntoConstraints = false
-
-        let hintCard = cardSection(title: "登录说明") { stack in
-            stack.addArrangedSubview(installHint)
-            installHint.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        }
-
-        let checkButton = NSButton()
-        checkButton.title = "检查更新"
-        checkButton.bezelStyle = .rounded
-        checkButton.controlSize = .regular
-        checkButton.target = self
-        checkButton.action = #selector(checkForUpdates)
-        let updateCard = cardSection(title: "更新") { stack in
-            stack.addArrangedSubview(checkButton)
-        }
-
-        let outer = NSStackView(views: [displayCard, refreshCard, updateCard, hintCard])
-        outer.orientation = .vertical
-        outer.alignment = .leading
-        outer.spacing = 14
-        outer.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(outer)
-        NSLayoutConstraint.activate([
-            outer.topAnchor.constraint(equalTo: view.topAnchor),
-            outer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            outer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            view.bottomAnchor.constraint(equalTo: outer.bottomAnchor),
-            displayCard.widthAnchor.constraint(equalTo: outer.widthAnchor),
-            refreshCard.widthAnchor.constraint(equalTo: outer.widthAnchor),
-            hintCard.widthAnchor.constraint(equalTo: outer.widthAnchor),
-            updateCard.widthAnchor.constraint(equalTo: outer.widthAnchor),
-        ])
-        return view
-    }
-
-    private func buildRefreshIntervalCard() -> NSView {
-        refreshIntervalLabel = NSTextField(labelWithString: "")
-        refreshIntervalLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
-        refreshIntervalLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        refreshIntervalSlider = NSSlider(value: AppSettings.refreshInterval,
-                                         minValue: 30, maxValue: 900,
-                                         target: self, action: #selector(refreshIntervalChanged))
-        refreshIntervalSlider.isContinuous = true
-        refreshIntervalSlider.translatesAutoresizingMaskIntoConstraints = false
-
-        updateRefreshLabel(AppSettings.refreshInterval)
-
-        return cardSection(title: "数据自动刷新时间间隔") { stack in
-            let row = NSView()
-            row.translatesAutoresizingMaskIntoConstraints = false
-            row.addSubview(self.refreshIntervalSlider)
-            row.addSubview(self.refreshIntervalLabel)
-            NSLayoutConstraint.activate([
-                self.refreshIntervalSlider.leadingAnchor.constraint(equalTo: row.leadingAnchor),
-                self.refreshIntervalSlider.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-                self.refreshIntervalSlider.trailingAnchor.constraint(equalTo: self.refreshIntervalLabel.leadingAnchor, constant: -8),
-                self.refreshIntervalLabel.trailingAnchor.constraint(equalTo: row.trailingAnchor),
-                self.refreshIntervalLabel.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-                self.refreshIntervalLabel.widthAnchor.constraint(equalToConstant: 50),
-                row.heightAnchor.constraint(equalToConstant: 24),
-            ])
-            stack.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        }
-    }
-
-    @objc private func refreshIntervalChanged() {
-        let v = refreshIntervalSlider.doubleValue
-        // 经过整分钟刻度时触发触觉反馈，给"卡一下"的感觉
-        let prevMinute = Int(AppSettings.refreshInterval) / 60
-        let currMinute = Int(v) / 60
-        if prevMinute != currMinute {
-            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
-        }
-        AppSettings.refreshInterval = v
-        updateRefreshLabel(v)
-    }
-
-    private func updateRefreshLabel(_ seconds: Double) {
-        if seconds < 60 {
-            refreshIntervalLabel.stringValue = "\(Int(seconds))s"
-        } else {
-            let m = Int(seconds) / 60
-            let s = Int(seconds) % 60
-            refreshIntervalLabel.stringValue = s == 0 ? "\(m)min" : "\(m)m\(s)s"
-        }
-    }
-
-    // MARK: - About
-
-    private func buildAboutView() -> NSView {
-        let view = NSView()
-        view.translatesAutoresizingMaskIntoConstraints = false
-
-        let nameLabel = NSTextField(labelWithString: AppInfo.name)
-        nameLabel.font = .systemFont(ofSize: 20, weight: .semibold)
-
-        let versionLabel = NSTextField(labelWithString: "版本 \(AppInfo.version)")
-        versionLabel.font = .systemFont(ofSize: 13)
-        versionLabel.textColor = .secondaryLabelColor
-
-        let aboutCard = cardSection(title: "关于") { stack in
-            stack.addArrangedSubview(nameLabel)
-            stack.addArrangedSubview(versionLabel)
-        }
-
-        let outer = NSStackView(views: [aboutCard])
-        outer.orientation = .vertical
-        outer.alignment = .leading
-        outer.spacing = 14
-        outer.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(outer)
-        NSLayoutConstraint.activate([
-            outer.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
-            outer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            outer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            view.bottomAnchor.constraint(equalTo: outer.bottomAnchor, constant: 8),
-            aboutCard.widthAnchor.constraint(equalTo: outer.widthAnchor),
-        ])
-        return view
-    }
-
-    @objc private func checkForUpdates() {
-        AppUpdaterManager.shared.checkForUpdates()
-    }
-
-    // MARK: - Helpers
-
-    private func makeSwitch(title: String, value: Bool, action: Selector) -> NSSwitch {
-        let s = NSSwitch()
-        s.state = value ? .on : .off
-        s.target = self
-        s.action = action
-        s.translatesAutoresizingMaskIntoConstraints = false
-        return s
-    }
-
-    /// 标签 + 右侧开关横排，可选副标题
-    private func switchRow(title: String, subtitle: String?, sw: NSView) -> NSView {
-        let label = NSTextField(labelWithString: title)
-        label.font = .systemFont(ofSize: 13, weight: .medium)
-        label.translatesAutoresizingMaskIntoConstraints = false
-
-        let row = NSView()
-        row.translatesAutoresizingMaskIntoConstraints = false
-        row.addSubview(label)
-        row.addSubview(sw)
-
-        var constraints: [NSLayoutConstraint] = [
-            label.leadingAnchor.constraint(equalTo: row.leadingAnchor),
-            label.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            sw.trailingAnchor.constraint(equalTo: row.trailingAnchor),
-            sw.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            row.heightAnchor.constraint(greaterThanOrEqualToConstant: 24),
-        ]
-
-        if let subtitle = subtitle {
-            let sub = NSTextField(labelWithString: subtitle)
-            sub.font = .systemFont(ofSize: 11)
-            sub.textColor = .secondaryLabelColor
-            sub.translatesAutoresizingMaskIntoConstraints = false
-            row.addSubview(sub)
-            constraints += [
-                sub.leadingAnchor.constraint(equalTo: row.leadingAnchor),
-                sub.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 2),
-                sw.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            ]
-        }
-        NSLayoutConstraint.activate(constraints)
-        return row
-    }
-
-    private func separator() -> NSView {
-        let line = NSBox()
-        line.boxType = .separator
-        line.translatesAutoresizingMaskIntoConstraints = false
-        line.heightAnchor.constraint(equalToConstant: 1).isActive = true
-        return line
-    }
-
-    private func showTab(_ index: Int) {
-        generalView.isHidden = index != 0
-        aboutView.isHidden = index != 1
-
-        activeDocumentBottomConstraint?.isActive = false
-        let activeView: NSView = index == 0 ? generalView! : aboutView!
-        activeDocumentBottomConstraint = activeView.bottomAnchor.constraint(equalTo: documentView.bottomAnchor)
-        activeDocumentBottomConstraint?.isActive = true
-
-        scrollContentToTop()
-    }
-
-    private func scrollContentToTop() {
-        let clipView = contentContainer.contentView
-        clipView.scroll(to: .zero)
-        contentContainer.reflectScrolledClipView(clipView)
-    }
-
-    @objc private func toggleShowRemaining() {
-        AppSettings.showRemainingCost = showRemainingSwitch.state == .on
-    }
-
-    @objc private func toggleShowPercentage() {
-        AppSettings.showPercentage = showPercentageSwitch.state == .on
-    }
-
-    @objc private func toggleShowProgressBar() {
-        AppSettings.showProgressBar = showProgressBarSwitch.state == .on
+    func syncAppearance(_ mode: AppearanceMode) {
+        DashboardTheme.apply()
+        window?.appearance = mode.nsAppearance
     }
 
     func showSettings() {
-        showRemainingSwitch.state = AppSettings.showRemainingCost ? .on : .off
-        showPercentageSwitch.state = AppSettings.showPercentage ? .on : .off
-        showProgressBarSwitch.state = AppSettings.showProgressBar ? .on : .off
-        refreshIntervalSlider.doubleValue = AppSettings.refreshInterval
-        updateRefreshLabel(AppSettings.refreshInterval)
+        syncAppearance(AppSettings.appearanceMode)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

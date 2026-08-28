@@ -132,6 +132,64 @@ final class APIClient {
         fetchUsage(dayOffset: 0, pageSize: pageSize, maxLookbackDays: maxLookbackDays, completion: completion)
     }
 
+    struct DailyUsage {
+        let dayStart: Date
+        let items: [UsageResponse.UsageItem]
+    }
+
+    /// 并发拉取最近 days 天（含今天）的逐日用量，返回按 今天→N天前 排序。
+    /// 单日失败（网络/解码）按空数据处理，不导致整体失败；401/403 时整体返回 unauthorized。
+    func fetchRecentDailyUsage(
+        days: Int = 7,
+        completion: @escaping (Result<[DailyUsage], APIError>) -> Void
+    ) {
+        let cal = Calendar.current
+        let todayStart = cal.startOfDay(for: Date())
+        var results = [DailyUsage?](repeating: nil, count: days)
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var unauthorized = false
+
+        for offset in 0..<days {
+            let dayStart = cal.date(byAdding: .day, value: -offset, to: todayStart)!
+            let end: Date = offset == 0
+                ? Date()
+                : dayStart.addingTimeInterval(24 * 60 * 60 - 1)
+            let startMs = String(Int64(dayStart.timeIntervalSince1970 * 1000))
+            let endMs = String(Int64(end.timeIntervalSince1970 * 1000))
+
+            group.enter()
+            fetchDayAllPages(startMs: startMs, endMs: endMs, pageSize: 500) { result in
+                defer { group.leave() }
+                switch result {
+                case .success(let response):
+                    lock.lock()
+                    results[offset] = DailyUsage(dayStart: dayStart, items: response.list ?? [])
+                    lock.unlock()
+                case .failure(.unauthorized):
+                    lock.lock()
+                    unauthorized = true
+                    lock.unlock()
+                case .failure:
+                    break // 单日失败按空处理（spec：单日失败记 0，整体不失败）
+                }
+            }
+        }
+
+        group.notify(queue: .main) {
+            if unauthorized {
+                completion(.failure(.unauthorized))
+                return
+            }
+            let assembled = (0..<days).map { offset -> DailyUsage in
+                if let r = results[offset] { return r }
+                let day = cal.date(byAdding: .day, value: -offset, to: todayStart)!
+                return DailyUsage(dayStart: day, items: [])
+            }
+            completion(.success(assembled))
+        }
+    }
+
     private func fetchUsage(
         dayOffset: Int,
         pageSize: Int,
@@ -370,10 +428,6 @@ struct ChannelListResponse: Decodable {
 struct UsageResponse: Decodable {
     let total: Int?
     let list: [UsageItem]?
-
-    var listSortedByRequestTimeDesc: [UsageItem] {
-        (list ?? []).sorted { ($0.requestTime ?? 0) > ($1.requestTime ?? 0) }
-    }
 
     struct UsageItem: Decodable {
         let model: String?
