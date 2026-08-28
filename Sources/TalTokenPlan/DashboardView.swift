@@ -113,7 +113,7 @@ private struct LoadedDashboardView: View {
 
                 HStack(alignment: .top, spacing: 12) {
                     QuotaRingCard(content: content)
-                        .frame(width: 210)
+                        .frame(width: 240)
                     VStack(spacing: 12) {
                         HStack(spacing: 12) {
                             StatCardView(title: "今日", segment: content.today)
@@ -151,24 +151,44 @@ private struct QuotaRingCard: View {
                     )
                     .rotationEffect(.degrees(-90))
                     .animation(.easeOut(duration: 0.6), value: fraction)
+                if let maxFraction {
+                    Circle()
+                        .stroke(DashboardTheme.trackBackground, lineWidth: 7)
+                        .frame(width: 104, height: 104)
+                    Circle()
+                        .trim(from: 0, to: maxFraction)
+                        .stroke(
+                            DashboardTheme.purple,
+                            style: StrokeStyle(lineWidth: 7, lineCap: .round)
+                        )
+                        .frame(width: 104, height: 104)
+                        .rotationEffect(.degrees(-90))
+                        .animation(.easeOut(duration: 0.6), value: maxFraction)
+                }
                 VStack(spacing: 2) {
                     Text(percentText)
-                        .font(.system(size: 30, weight: .semibold, design: .rounded))
+                        .font(.system(size: maxFraction == nil ? 30 : 26, weight: .semibold, design: .rounded))
                         .foregroundColor(DashboardTheme.textPrimary)
-                    Text("剩余")
-                        .font(.system(size: 11))
-                        .foregroundColor(DashboardTheme.textSecondary)
+                    if let maxPercentText {
+                        Text("MAX \(maxPercentText)")
+                            .font(.system(size: 13, weight: .medium, design: .rounded))
+                            .foregroundColor(DashboardTheme.textSecondary)
+                    }
                 }
             }
             .frame(width: 150, height: 150)
 
             VStack(spacing: 4) {
-                Text("剩余 \(content.remainingText) / \(content.limitText)")
+                Text("已用 \(content.usedText) / \(content.limitText)（\(usedPercentDetail)）")
                     .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
                     .foregroundColor(DashboardTheme.textPrimary)
                 if let maxText = content.maxModelText {
                     Text(maxText)
                         .font(.system(size: 10))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
                         .foregroundColor(DashboardTheme.textSecondary)
                 }
             }
@@ -179,12 +199,28 @@ private struct QuotaRingCard: View {
 
     private var fraction: Double {
         guard let ratioPct = content.ratioPct else { return 0 }
-        return 1 - min(max(ratioPct / 100, 0), 1)
+        return min(max(ratioPct / 100, 0), 1)
     }
 
     private var percentText: String {
         guard let ratioPct = content.ratioPct else { return "--" }
-        return String(format: "%.0f%%", 100 - ratioPct)
+        return String(format: "%.0f%%", ratioPct)
+    }
+
+    /// Max 内环：已用进度，接口未返回 Max 数据时不显示
+    private var maxFraction: Double? {
+        guard let maxRatioPct = content.maxRatioPct else { return nil }
+        return min(max(maxRatioPct / 100, 0), 1)
+    }
+
+    private var maxPercentText: String? {
+        guard let maxRatioPct = content.maxRatioPct else { return nil }
+        return String(format: "%.0f%%", maxRatioPct)
+    }
+
+    private var usedPercentDetail: String {
+        guard let ratioPct = content.ratioPct else { return "--" }
+        return String(format: "%.1f%%", ratioPct)
     }
 }
 
@@ -298,7 +334,7 @@ private struct WoolBarView: View {
 private struct TodayUsageSectionView: View {
     let entries: [TodayUsageEntry]
     @State private var page = 0
-    private let pageSize = 6
+    private let pageSize = 10
 
     private var pageCount: Int { max(1, (entries.count + pageSize - 1) / pageSize) }
 

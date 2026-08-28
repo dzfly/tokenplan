@@ -42,6 +42,7 @@ struct DashboardContent {
     let remainingText: String
     let limitText: String
     let maxModelText: String?
+    let maxRatioPct: Double?
     let cumulativeTokensText: String
     let today: UsageSegmentSet
     let week: UsageSegmentSet
@@ -124,6 +125,7 @@ final class DashboardViewModel: ObservableObject {
         var remainingText = "-"
         var limitText = "-"
         var maxModelText: String?
+        var maxRatioPct: Double?
         if let cs = billing?.costSummary {
             let ratio = cs.usageRatio ?? (cs.limit > 0 ? cs.used / cs.limit : 0)
             ratioPct = ratio * 100
@@ -132,6 +134,7 @@ final class DashboardViewModel: ObservableObject {
             limitText = MenuBuilder.formatBillingCost(cs.limit)
             if let maxUsed = cs.maxModelUsed, let maxLimit = cs.maxModelLimit, maxLimit > 0 {
                 let r = cs.maxModelUsageRatio ?? (maxUsed / maxLimit)
+                maxRatioPct = r * 100
                 maxModelText = "Max \(MenuBuilder.formatBillingCost(maxUsed)) / \(MenuBuilder.formatBillingCost(maxLimit))（\(String(format: "%.1f", r * 100))%）"
             }
         }
@@ -167,6 +170,7 @@ final class DashboardViewModel: ObservableObject {
             remainingText: remainingText,
             limitText: limitText,
             maxModelText: maxModelText,
+            maxRatioPct: maxRatioPct,
             cumulativeTokensText: cumulativeText,
             today: aggregateSegments(from: todayItems),
             week: aggregateSegments(from: allItems),

@@ -242,42 +242,98 @@ final class StatusBarProgressView: NSView {
         return result
     }
 
-    // MARK: - Rich layout（丰富：标签 + 进度条 + 金额）
+    // MARK: - Rich layout（丰富：账单 + Max 双行进度条与金额）
 
-    private let richBarWidth: CGFloat = 42
-    private let richBarHeight: CGFloat = 4
+    private let richBarWidth: CGFloat = 32
+    private let richBarHeight: CGFloat = 4.5
+    private let maxLabelFontSize: CGFloat = 6.5
 
-    private func richLayoutSize(for billing: BillingSnapshot, height: CGFloat) -> NSSize {
-        let labelW = ceil(("剩余" as NSString).size(withAttributes: textAttributes(size: secondaryFontSize, weight: .medium)).width)
-        let amountW = ceil((amountText(billing) as NSString).size(withAttributes: textAttributes(size: 9, weight: .semibold)).width)
-        let width = horizontalPadding + labelW + 5 + richBarWidth + 5 + amountW + horizontalPadding
-        return NSSize(width: ceil(width), height: height)
+    private func amountText(_ value: Double) -> String {
+        String(format: "¥%.1f", value)
     }
 
-    private func amountText(_ billing: BillingSnapshot) -> String {
-        String(format: "¥%.1f", billing.remaining)
+    private func hasMaxInfo(_ billing: BillingSnapshot) -> Bool {
+        billing.maxModelUsed != nil && billing.maxModelRatioPct != nil
+    }
+
+    private func richLayoutSize(for billing: BillingSnapshot, height: CGFloat) -> NSSize {
+        let labelColumn = maxRichLabelColumn()
+        let amount1W = ceil((amountText(billing.used) as NSString)
+            .size(withAttributes: textAttributes(size: primaryFontSize, weight: .semibold)).width)
+        var width = labelColumn + 3 + richBarWidth + 5 + amount1W
+        if hasMaxInfo(billing) {
+            let amount2W = ceil((amountText(billing.maxModelUsed ?? 0) as NSString)
+                .size(withAttributes: textAttributes(size: secondaryFontSize, weight: .medium, secondary: true)).width)
+            width = max(width, labelColumn + 3 + richBarWidth + 5 + amount2W)
+        }
+        return NSSize(width: ceil(width) + horizontalPadding * 2, height: height)
+    }
+
+    private func maxRichLabelColumn() -> CGFloat {
+        let label1W = ceil(("ALL" as NSString).size(withAttributes: textAttributes(size: 7, weight: .semibold)).width)
+        let label2W = ceil(("MAX" as NSString).size(withAttributes: textAttributes(size: maxLabelFontSize, weight: .medium, secondary: true)).width)
+        return max(label1W, label2W)
     }
 
     private func drawRichLayout(billing: BillingSnapshot) {
-        let labelAttr = NSAttributedString(string: "剩余", attributes: textAttributes(size: secondaryFontSize, weight: .medium))
-        let amountAttr = NSAttributedString(string: amountText(billing), attributes: textAttributes(size: 9, weight: .semibold))
-        let labelSize = labelAttr.size()
-        let amountSize = amountAttr.size()
+        let line1Y = bounds.height * 0.66
+        let line2Y = bounds.height * 0.28
+        let label1Attr = textAttributes(size: 7, weight: .semibold)
+        let label2Attr = textAttributes(size: maxLabelFontSize, weight: .medium, secondary: true)
+        let labelColumn = maxRichLabelColumn()
+        let labelX = bounds.minX + horizontalPadding
+        // 两条进度条同宽、同一起始 x（标签列取两行标签的最大宽度）
+        let barX = labelX + labelColumn + 3
+        let amountX = barX + richBarWidth + 5
 
-        var x = bounds.minX + horizontalPadding
-        var y = (bounds.height - labelSize.height) / 2
-        labelAttr.draw(in: NSRect(x: x, y: y, width: labelSize.width, height: labelSize.height))
-        x += labelSize.width + 5
+        drawText("ALL", attributes: label1Attr, leftX: labelX, centerY: line1Y)
+        drawProgressBar(
+            ratio: billing.ratioPct / 100,
+            in: NSRect(x: barX, y: line1Y - richBarHeight / 2, width: richBarWidth, height: richBarHeight),
+            color: progressRingColor
+        )
+        drawText(
+            amountText(billing.used),
+            attributes: textAttributes(size: primaryFontSize, weight: .semibold),
+            leftX: amountX,
+            centerY: line1Y
+        )
 
-        let barRect = NSRect(x: x, y: (bounds.height - richBarHeight) / 2, width: richBarWidth, height: richBarHeight)
-        drawProgressBar(ratio: billing.ratioPct / 100, in: barRect)
-        x += richBarWidth + 5
-
-        y = (bounds.height - amountSize.height) / 2
-        amountAttr.draw(in: NSRect(x: x, y: y, width: amountSize.width, height: amountSize.height))
+        guard hasMaxInfo(billing) else { return }
+        drawText("MAX", attributes: label2Attr, leftX: labelX, centerY: line2Y)
+        drawProgressBar(
+            ratio: (billing.maxModelRatioPct ?? 0) / 100,
+            in: NSRect(x: barX, y: line2Y - richBarHeight / 2, width: richBarWidth, height: richBarHeight),
+            color: maxBarColor
+        )
+        drawText(
+            amountText(billing.maxModelUsed ?? 0),
+            attributes: textAttributes(size: secondaryFontSize, weight: .medium, secondary: true),
+            leftX: amountX,
+            centerY: line2Y
+        )
     }
 
-    private func drawProgressBar(ratio: Double, in rect: NSRect) {
+    private func drawText(
+        _ text: String,
+        attributes: [NSAttributedString.Key: Any],
+        leftX: CGFloat,
+        centerY: CGFloat
+    ) {
+        let str = NSAttributedString(string: text, attributes: attributes)
+        str.draw(at: NSPoint(x: leftX, y: centerY - str.size().height / 2))
+    }
+
+    private var maxBarColor: NSColor {
+        NSColor(name: "StatusBarMaxBar") { appearance in
+            let dark = appearance.bestMatch(from: [.darkAqua, .aqua, .vibrantDark, .vibrantLight])
+            return (dark == .darkAqua || dark == .vibrantDark)
+                ? NSColor(calibratedRed: 0.72, green: 0.48, blue: 1.0, alpha: 1.0)
+                : NSColor(calibratedRed: 0.58, green: 0.32, blue: 0.92, alpha: 1.0)
+        }
+    }
+
+    private func drawProgressBar(ratio: Double, in rect: NSRect, color: NSColor) {
         let radius = rect.height / 2
         trackRingColor.setFill()
         NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
@@ -285,7 +341,7 @@ final class StatusBarProgressView: NSView {
         if clamped > 0.001 {
             let fillWidth = max(rect.height, rect.width * CGFloat(clamped))
             let fillRect = NSRect(x: rect.minX, y: rect.minY, width: fillWidth, height: rect.height)
-            progressRingColor.setFill()
+            color.setFill()
             NSBezierPath(roundedRect: fillRect, xRadius: radius, yRadius: radius).fill()
         }
     }
@@ -293,7 +349,7 @@ final class StatusBarProgressView: NSView {
     private func innerTextLines(billing: BillingSnapshot) -> [String] {
         [
             String(format: "%.2f%%", billing.ratioPct),
-            String(format: "¥%.1f", billing.remaining),
+            String(format: "¥%.1f", billing.used),
         ]
     }
 

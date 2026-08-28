@@ -533,7 +533,7 @@ enum MenuBuilder {
 
             menu.addItem(spacerItem(height: 6))
             menu.addItem(cardItem(rows: [
-                buttonRow(title: "打开主界面", symbolName: "macwindow", action: .openMain, host: host),
+                buttonRow(title: "主界面", symbolName: "macwindow", action: .openMain, host: host),
                 separatorRow(),
                 buttonRow(title: "设置", symbolName: "gearshape", action: .settings, host: host),
                 separatorRow(),
@@ -541,10 +541,7 @@ enum MenuBuilder {
             ]))
 
             if !data.lastUpdated.isEmpty {
-                let cap = NSMenuItem()
-                cap.attributedTitle = Style.hint("上次更新: \(data.lastUpdated)")
-                cap.isEnabled = false
-                menu.addItem(cap)
+                menu.addItem(hintItem("上次更新: \(data.lastUpdated)"))
             }
         } else {
             menu.addItem(cardItem(rows: [dataRow("未检测到登录凭证")]))
@@ -562,6 +559,25 @@ enum MenuBuilder {
                 buttonRow(title: "退出", symbolName: "power", action: .quit, host: host),
             ]))
         }
+    }
+
+    /// 底部提示文字行（view-based）：attributedTitle 菜单项在菜单展开中重建时
+    /// 动态色会按系统明暗（而非菜单外观）解析，导致深色菜单下文字变黑
+    private static func hintItem(_ text: String) -> NSMenuItem {
+        let wrapper = NSView(frame: NSRect(x: 0, y: 0, width: cardWidth, height: 18))
+        let label = NSTextField(labelWithAttributedString: Style.hint(text))
+        label.sizeToFit()
+        label.frame = NSRect(
+            x: 14,
+            y: (wrapper.frame.height - label.frame.height) / 2,
+            width: cardWidth - 28,
+            height: label.frame.height
+        )
+        wrapper.addSubview(label)
+        let item = NSMenuItem()
+        item.view = wrapper
+        item.isEnabled = false
+        return item
     }
 
     private static func spacerItem(height: CGFloat) -> NSMenuItem {

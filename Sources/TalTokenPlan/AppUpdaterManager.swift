@@ -13,6 +13,10 @@ final class AppUpdaterManager: NSObject, SPUUpdaterDelegate {
 
     func start() {
         guard controller == nil else { return }
+        // debug 包不检查更新（SwiftPM debug 构建定义 DEBUG，release 不定义）
+        #if DEBUG
+        return
+        #endif
         let updater = SPUStandardUpdaterController(
             startingUpdater: true,
             updaterDelegate: self,
@@ -25,6 +29,9 @@ final class AppUpdaterManager: NSObject, SPUUpdaterDelegate {
 
     /// 用户手动检查：激活 app 置顶 + 触发 Sparkle 检查；无新版本/出错通过 delegate 弹提示
     func checkForUpdates() {
+        #if DEBUG
+        return
+        #endif
         manualChecking = true
         NSApp.activate(ignoringOtherApps: true)
         controller?.checkForUpdates(nil)

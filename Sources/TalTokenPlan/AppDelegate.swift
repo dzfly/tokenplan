@@ -131,9 +131,22 @@ import AppKit
         let menu = makeStatusMenu()
         menu.delegate = self
         activeMenu = menu
-        statusItem.menu = menu
-        statusItem.button?.performClick(nil)
-        statusItem.menu = nil
+
+        guard let button = statusItem.button, let buttonWindow = button.window else {
+            statusItem.menu = menu
+            statusItem.button?.performClick(nil)
+            statusItem.menu = nil
+            return
+        }
+        let buttonRect = buttonWindow.convertToScreen(button.bounds)
+        let screen = buttonWindow.screen ?? NSScreen.main
+        let menuWidth = menu.size.width
+        let screenFrame = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 0, height: 0)
+        // 菜单水平中心对齐状态栏按钮中心，左右钳制在屏幕内；顶部贴按钮下缘
+        var x = buttonRect.midX - menuWidth / 2
+        x = max(screenFrame.minX + 4, min(x, screenFrame.maxX - menuWidth - 4))
+        let y = buttonRect.minY - 5
+        menu.popUp(positioning: nil, at: NSPoint(x: x, y: y), in: nil)
     }
 
     func menuDidClose(_ menu: NSMenu) {

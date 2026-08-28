@@ -159,7 +159,7 @@ private struct StatusPreview: NSViewRepresentable {
     let style: StatusBarStyle
 
     func makeNSView(context: Context) -> StatusBarProgressView {
-        let view = StatusBarProgressView(frame: NSRect(x: 0, y: 0, width: 160, height: 22))
+        let view = StatusBarProgressView(frame: NSRect(x: 0, y: 0, width: 10, height: 22))
         view.update(state: .data(Self.sample))
         return view
     }
@@ -169,7 +169,9 @@ private struct StatusPreview: NSViewRepresentable {
     }
 
     private static let sample = BillingSnapshot(
-        ratioPct: 45.20, remaining: 1234.5, used: 987.6, limit: 2222.1
+        ratioPct: 45.20, remaining: 1234.5, used: 987.6, limit: 2222.1,
+        maxModelUsed: 45.0, maxModelLimit: 100.0, maxModelRemaining: 55.0,
+        maxModelRatioPct: 45.0
     )
 }
 
@@ -274,6 +276,7 @@ private struct SettingsPanelView: View {
             }
             SettingsRow(title: "实时预览", detail: "菜单栏中的实际效果") {
                 StatusPreview(style: StatusBarStyle(rawValue: style) ?? .classic)
+                    .fixedSize()
                     .padding(.horizontal, 14)
                     .padding(.vertical, 5)
                     .background(
