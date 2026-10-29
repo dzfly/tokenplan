@@ -6,6 +6,17 @@
         <description>Token Plan for macOS</description>
         <language>zh-Hans</language>
         <item>
+            <title>Version 1.1.7</title>
+            <sparkle:version>16</sparkle:version>
+            <sparkle:shortVersionString>1.1.7</sparkle:shortVersionString>
+            <pubDate>Thu, 29 Oct 2026 09:46:46 +0000</pubDate>
+            <enclosure
+                url="https://github.com/dzfly/tokenplan/releases/download/v1.1.7/TokenPlan.zip"
+                sparkle:edSignature="sltRpR7BToKwSvoBHqkgKt2AZPySaa4Ef3yOISlqwzv3osQ0/Xa4EmrPZ2/VTKaF8HMCSvziYpBaDWzx/PpYCQ=="
+                length="4057247"
+                type="application/octet-stream" />
+        </item>
+        <item>
             <title>Version 1.1.6</title>
             <sparkle:version>15</sparkle:version>
             <sparkle:shortVersionString>1.1.6</sparkle:shortVersionString>
